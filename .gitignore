@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Local config (never commit real credentials / device data)
+config/config.yaml
+docker-compose.override.yml
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store

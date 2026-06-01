@@ -1,0 +1,16 @@
+# Local test deployment (Unraid host "Thor").
+# Uses the published multi-arch image from GHCR.
+services:
+  ecoflow-nut-bridge:
+    image: ghcr.io/alanstrok/ecoflow2nut-pibridge:latest
+    container_name: ecoflow-nut-bridge
+    # host networking so upsd is reachable on the LAN at <host>:3493
+    network_mode: host
+    # privileged + dbus mount are required for BLE access via BlueZ
+    privileged: true
+    volumes:
+      - /var/run/dbus:/var/run/dbus
+      - ./config/config.yaml:/app/config/config.yaml:ro
+    restart: unless-stopped
+    environment:
+      - TZ=America/St_Barthelemy

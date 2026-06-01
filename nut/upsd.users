@@ -1,0 +1,14 @@
+# NUT client credentials.
+#
+# CHANGE THESE PASSWORDS before exposing the bridge on any shared network.
+# Unraid / Synology NUT clients use the "upsmon" user below (read-only is
+# sufficient for monitoring).
+
+[monuser]
+    password = changeme-monuser
+    upsmon secondary
+
+[admin]
+    password = changeme-admin
+    actions = SET
+    instcmds = ALL

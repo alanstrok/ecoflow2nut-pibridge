@@ -1,0 +1,283 @@
+# ecoflow-nut-bridge
+
+Expose an **EcoFlow DELTA 3** portable power station as a standard
+**NUT (Network UPS Tools)** UPS over Bluetooth Low Energy. The bridge polls the
+DELTA 3 over BLE, translates its telemetry (state of charge, AC input/output
+watts, AC-input-present) into NUT variables, writes a `dummy-ups` state file and
+runs `upsd` on port 3493 — so any NUT client (Unraid's built-in client,
+Synology, `upsc`, …) can monitor the DELTA 3 as if it were a normal UPS.
+
+> ⚠️ **Disclaimer.** This project is **not affiliated with, authorized, or
+> endorsed by EcoFlow**. It speaks an undocumented BLE protocol reconstructed by
+> the community (see [Credits](#10-credits)). Use at your own risk. It does not
+> use the EcoFlow cloud API for telemetry or control.
+
+---
+
+## Table of contents
+
+1. [What it does](#1-what-it-does)
+2. [Disclaimer](#2-disclaimer)
+3. [Hardware support](#3-hardware-support)
+4. [Quick start (Docker on Unraid)](#4-quick-start-docker-on-unraid)
+5. [Production deployment (Pi Zero 2W)](#5-production-deployment-raspberry-pi-zero-2w)
+6. [Configuration reference](#6-configuration-reference)
+7. [NUT client setup](#7-nut-client-setup)
+8. [Troubleshooting](#8-troubleshooting)
+9. [Architecture](#9-architecture)
+10. [Credits](#10-credits)
+
+---
+
+## 1. What it does
+
+A single async daemon connects to the DELTA 3 over BLE, polls state every few
+seconds, derives NUT `ups.status` / `battery.charge` / `ups.load` / runtime, and
+keeps a `dummy-ups` `.dev` file fresh. The NUT `dummy-ups` driver re-reads that
+file and `upsd` serves it on 3493. The same Python code runs unchanged in a
+Docker container (validation) and as a bare-metal systemd service (production);
+only the wrapper differs.
+
+It also exposes manual control commands — toggle **AC**, **USB** and **12V DC**
+outputs — as Python functions and a small CLI. These are **not** triggered
+automatically; auto-shutdown logic is a future iteration.
+
+## 2. Disclaimer
+
+See the banner above. The BLE protocol is reverse-engineered, may change with
+firmware updates, and is implemented on a best-effort basis. **Correctness of
+the read path (SoC + AC status) is prioritised over feature completeness.**
+
+## 3. Hardware support
+
+| Item | Detail |
+|------|--------|
+| Confirmed device | EcoFlow **DELTA 3** (1024 Wh, 1800 W AC), serial prefix `P231`, BLE name `EF-D3` |
+| Protocol family | `pd335` (modern encrypted protobuf BLE protocol) |
+| Test host | Unraid + Realtek RTL8821CU USB BT dongle (BlueZ) |
+| Production host | Raspberry Pi Zero 2W, Raspberry Pi OS Lite 64-bit, integrated BT |
+
+Other EcoFlow models in the same family (DELTA 3 Plus/Max, River 3, …) use the
+same framing and protobuf field numbers and will likely work with adjusted
+config, but only the DELTA 3 is targeted here.
+
+> ### Protocol note — DELTA 3 ≠ DELTA 2
+> The DELTA **2** uses an older *plaintext* BLE protocol with fixed byte offsets.
+> The DELTA **3** uses the newer **encrypted, protobuf-based** protocol
+> (`DisplayPropertyUpload` / `ConfigWrite` messages over a V3 frame with CRC8 +
+> CRC16 and an XOR-deobfuscated payload). This bridge implements the **DELTA 3**
+> protocol. The read/decode path is unit-tested against **real captured frames**
+> from a sibling device that shares identical protobuf field numbers.
+
+> ### Authentication
+> The DELTA 3 negotiates an encrypted session (`encrypt_type 7`, ECDH). The final
+> authentication step hashes `md5(user_id + serial)`, where `user_id` is your
+> EcoFlow account user id. This id is used **only once, locally, to derive the
+> BLE session secret** — no telemetry or control traffic goes through the cloud.
+> Obtain it once (e.g. via the EcoFlow login API or app diagnostics) and set it
+> as `ecoflow.user_id` in the config. If your unit advertises `encrypt_type 0`
+> or `1`, no `user_id` is required. See [Troubleshooting](#8-troubleshooting).
+
+## 4. Quick start (Docker on Unraid)
+
+The container bundles BlueZ, the NUT server, and the bridge daemon.
+
+1. Create a config from the example:
+
+   ```bash
+   mkdir -p config
+   cp config/config.example.yaml config/config.yaml
+   # edit config/config.yaml: set mac, serial, and user_id (if needed)
+   ```
+
+2. Use the provided compose file (edit the image owner / timezone):
+
+   ```bash
+   docker compose up -d
+   docker compose logs -f
+   ```
+
+   It runs with `network_mode: host` (so `upsd` is reachable at `<host>:3493`),
+   `privileged: true`, and `/var/run/dbus` mounted — all required for BLE.
+
+3. Verify:
+
+   ```bash
+   docker exec ecoflow-nut-bridge upsc ecoflow@localhost
+   ```
+
+   You should see sensible `battery.charge`, `ups.status`, `ups.load`, etc.
+
+Images are built and published automatically to
+`ghcr.io/<owner>/ecoflow2nut-pibridge` for `linux/amd64` and `linux/arm64` on
+every push to `main`.
+
+## 5. Production deployment (Raspberry Pi Zero 2W)
+
+Bare-metal systemd, no Docker. From a checkout on the Pi:
+
+```bash
+sudo ./systemd/install.sh
+```
+
+The installer:
+
+* installs `bluez`, `nut-server`, `nut-client`, `python3-venv`;
+* creates the `ecoflow` service user (in the `bluetooth` and `nut` groups);
+* builds a venv at `/opt/ecoflow-nut-bridge/.venv` and installs the package;
+* drops NUT config into `/etc/nut/` and sets `MODE=netserver`;
+* installs config at `/etc/ecoflow-nut/config.yaml`;
+* installs and enables the `ecoflow-nut-bridge.service` systemd unit.
+
+Then:
+
+```bash
+sudo nano /etc/ecoflow-nut/config.yaml   # MAC / serial / user_id
+sudo nano /etc/nut/upsd.users            # set real passwords
+sudo systemctl restart nut-server
+sudo systemctl start ecoflow-nut-bridge
+upsc ecoflow@localhost
+```
+
+> The Pi is powered from the DELTA 3's own USB-A port. Auto-shutdown based on
+> low battery is intentionally **not** wired up in this version.
+
+## 6. Configuration reference
+
+Full annotated example: [`config/config.example.yaml`](config/config.example.yaml).
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `ecoflow.mac` | — (required) | BLE MAC of the DELTA 3 |
+| `ecoflow.serial` | — | Device serial (used for auth + reported to NUT) |
+| `ecoflow.poll_interval_seconds` | `5` | How often the NUT file is refreshed from the latest state |
+| `ecoflow.encrypt_type` | `auto` | `auto` reads it from the advertisement; or force `0`/`1`/`7` |
+| `ecoflow.user_id` | `""` | EcoFlow account user id, required for `encrypt_type 7` |
+| `ble.adapter` | `hci0` | BlueZ adapter |
+| `ble.connect_timeout_seconds` | `30` | BLE connect timeout |
+| `ble.reconnect_backoff_max_seconds` | `60` | Max exponential reconnect backoff |
+| `nut.dev_file_path` | `/var/run/nut/ecoflow.dev` | dummy-ups state file (must match `ups.conf`) |
+| `nut.battery_capacity_wh` | `1024` | Pack capacity for runtime estimate |
+| `nut.thresholds.low_battery_percent` | `25` | SoC below this → `OB LB` |
+| `nut.thresholds.critical_battery_percent` | `10` | Reserved for future auto-cut |
+| `nut.static_values.*` | — | Nameplate values reported verbatim (voltage, frequency, mfr, model, serial) |
+| `logging.level` / `logging.format` | `INFO` / `json` | structlog level and `json`/`console` output |
+
+### NUT variable mapping
+
+| NUT variable | Source |
+|--------------|--------|
+| `ups.status` | `OL` if AC present and drawing > `ac_input_present_min_watts`; `OB LB` if SoC < low threshold; else `OB` |
+| `battery.charge` | `cms_batt_soc` (SoC %) |
+| `battery.runtime` | `(SoC/100 · capacity_wh · 0.9) / ac_output_watts · 3600`, or `99999` when idle |
+| `ups.load` / `ups.realpower` | AC output watts (`pow_get_ac_out`, abs) |
+| `ups.realpower.nominal` | `1800` |
+| `input.*` / `output.*` | static nameplate values |
+
+### CLI
+
+```bash
+ecoflow-nut --config config.yaml read     # connect, read one frame, dump JSON
+ecoflow-nut --config config.yaml run      # run the daemon (default mode)
+ecoflow-nut --config config.yaml ac on    # toggle AC output  (also: ac off)
+ecoflow-nut --config config.yaml usb on   # toggle USB output (also: usb off)
+ecoflow-nut --config config.yaml dc on    # toggle 12V DC out (also: dc off)
+```
+
+## 7. NUT client setup
+
+### Unraid (built-in NUT client)
+
+Settings → **UPS Settings**:
+
+* UPS Type / mode: **Network UPS Tools — remote** (or "Custom").
+* Remote NUT server IP: the bridge host.
+* UPS name: `ecoflow`, port `3493`.
+* Username/password: the `monuser` credentials from `upsd.users`.
+
+### Synology DSM
+
+Control Panel → **Hardware & Power → UPS**:
+
+* Enable UPS support → **Network UPS server**.
+* Network UPS server IP: the bridge host.
+* (Synology assumes UPS name `ups`; if needed, add an `[ups]` alias section to
+  `ups.conf` pointing at the same `.dev` file, or rename `[ecoflow]`.)
+
+### Any host with `upsc`
+
+```bash
+upsc ecoflow@<bridge-host>
+upsc ecoflow@<bridge-host> battery.charge
+```
+
+## 8. Troubleshooting
+
+**BLE: device not found during scan.**
+Confirm the MAC with `bluetoothctl` → `scan on`. Ensure only one thing talks to
+the DELTA 3 at a time — the EcoFlow phone app holds the BLE connection
+exclusively, so close it. On Docker you need `privileged: true` and the
+`/var/run/dbus` mount.
+
+**`encrypt_type 7 (ECDH) requires 'ecoflow.user_id'`.**
+Your unit uses the encrypted handshake. Set `ecoflow.user_id` (see
+[Authentication](#authentication)). To inspect the advertised type, run
+`ecoflow-nut --config config.yaml read` with `logging.format: console` and look
+at the `encrypt_type` in the `ble.found` log line.
+
+**Realtek RTL8821CU dongle issues (Unraid).**
+The chip needs firmware/driver support in the host kernel. Verify the adapter
+appears with `hciconfig`/`bluetoothctl list` on the host before starting the
+container. If `hci0` is busy, set `ble.adapter` accordingly.
+
+**Frequent BLE disconnects.**
+Expected — the bridge reconnects with exponential backoff (up to
+`reconnect_backoff_max_seconds`). If no successful read happens for 2 minutes, a
+watchdog exits the process so systemd/Docker restarts it cleanly. Keep the
+antenna/host within a few metres of the unit.
+
+**`upsc` returns "Driver not connected".**
+The dummy-ups driver couldn't read the `.dev` file. Check the bridge actually
+wrote it (`cat /var/run/nut/ecoflow.dev`), that `port` in `ups.conf` matches
+`nut.dev_file_path`, and that NUT is in `netserver` mode.
+
+**Values look stale or partial.**
+Each BLE frame only carries *changed* fields; the bridge accumulates them. SoC
+and AC status appear within a few seconds of connecting.
+
+## 9. Architecture
+
+```
+                          ┌──────────────────────── bridge host (Pi / Unraid) ───┐
+   EcoFlow DELTA 3        │                                                       │
+  ┌───────────────┐  BLE  │  ┌────────────────────┐    writes    ┌─────────────┐ │
+  │  pd335 fw     │◀─────▶│  │  ecoflow-nut daemon │ ───────────▶ │ ecoflow.dev │ │
+  │ DisplayProp.  │ GATT  │  │  • bleak transport  │  (dummy-ups  │  state file │ │
+  │ ConfigWrite   │ 0002/ │  │  • V3 frame + CRC   │   format)    └──────┬──────┘ │
+  └───────────────┘ 0003  │  │  • protobuf decode  │                     │ reads  │
+                          │  │  • NUT translation  │              ┌──────▼──────┐ │
+                          │  └────────────────────┘              │ dummy-ups   │ │
+                          │                                       │   driver    │ │
+                          │                                       └──────┬──────┘ │
+                          │                                  ┌───────────▼──────┐ │
+   NUT clients  ◀─────────┼──────────  TCP :3493  ──────────│       upsd        │ │
+  (Unraid, Synology,      │                                  └──────────────────┘ │
+   upsc, …)               └───────────────────────────────────────────────────────┘
+```
+
+## 10. Credits
+
+The EcoFlow BLE protocol is undocumented. This implementation stands on the
+shoulders of community reverse-engineering work — in particular
+[rabits/ha-ef-ble](https://github.com/rabits/ha-ef-ble) (modern encrypted
+protocol, protobuf field numbers, handshake) and
+[vwt12eh8/hassio-ecoflow](https://github.com/vwt12eh8/hassio-ecoflow) (framing
+and CRC), with cross-checks against
+[tolwi/hassio-ecoflow-cloud](https://github.com/tolwi/hassio-ecoflow-cloud),
+[nielsole/ecoflow-bt-reverse-engineering](https://github.com/nielsole/ecoflow-bt-reverse-engineering)
+and `anton-ptashnik/ecoflow-api-py`. See [NOTICE](NOTICE) for license details of
+vendored material. Built on [bleak](https://github.com/hbldh/bleak) and
+[Network UPS Tools](https://networkupstools.org/).
+
+Licensed under the [MIT License](LICENSE).
+```

@@ -1,0 +1,51 @@
+# EcoFlow DELTA 3 NUT bridge configuration.
+# Copy to config.yaml and edit for your device.
+
+ecoflow:
+  # BLE MAC address of your DELTA 3 (find with: bluetoothctl scan on).
+  mac: "9C:9E:6E:74:02:D2"
+  # Serial number, printed on the unit / shown in the EcoFlow app.
+  serial: "P231ZE1APH4E1669"
+  model: "delta3"
+  poll_interval_seconds: 5
+
+  # Encryption handshake. "auto" reads the type from the BLE advertisement.
+  # The DELTA 3 uses the encrypted ECDH handshake (type 7), which needs a
+  # one-time EcoFlow account user_id (see README "Authentication"). This is used
+  # ONLY to derive the local BLE session secret -- no telemetry goes via cloud.
+  encrypt_type: "auto"
+  user_id: ""   # required for encrypt_type 7; obtain once via the EcoFlow API
+
+ble:
+  adapter: "hci0"
+  connect_timeout_seconds: 30
+  reconnect_backoff_max_seconds: 60
+  scan_timeout_seconds: 30
+
+nut:
+  device_name: "ecoflow"
+  dev_file_path: "/var/run/nut/ecoflow.dev"
+  battery_capacity_wh: 1024
+  realpower_nominal: 1800
+  battery_warning_percent: 35
+  battery_runtime_low_seconds: 300
+  battery_type: "LiFePO4"
+  battery_voltage_nominal: 51.2
+  input_transfer_low: 200
+  input_transfer_high: 250
+  ac_input_present_min_watts: 10
+  thresholds:
+    low_battery_percent: 25       # triggers OB LB
+    critical_battery_percent: 10  # reserved for future auto-cut logic
+  static_values:
+    input_voltage: 230
+    input_frequency: 50
+    output_voltage: 230
+    output_frequency: 50
+    manufacturer: "EcoFlow"
+    model: "DELTA 3"
+    serial: "P231ZE1APH4E1669"
+
+logging:
+  level: "INFO"
+  format: "json"   # or "console"

@@ -1,0 +1,16 @@
+# User-facing example. Copy to docker-compose.yml and adjust:
+#   * replace <owner> with the GHCR owner of the image
+#   * mount your own config.yaml
+#   * set your timezone
+services:
+  ecoflow-nut-bridge:
+    image: ghcr.io/<owner>/ecoflow-nut-bridge:latest
+    container_name: ecoflow-nut-bridge
+    network_mode: host        # exposes NUT on <host>:3493
+    privileged: true          # required for BLE / BlueZ access
+    volumes:
+      - /var/run/dbus:/var/run/dbus
+      - ./config/config.yaml:/app/config/config.yaml:ro
+    restart: unless-stopped
+    environment:
+      - TZ=Etc/UTC

@@ -1,0 +1,22 @@
+[Unit]
+Description=EcoFlow NUT Bridge
+After=network.target bluetooth.target nut-server.service
+Wants=bluetooth.target
+
+[Service]
+Type=simple
+User=ecoflow
+Group=nut
+WorkingDirectory=/opt/ecoflow-nut-bridge
+ExecStart=/opt/ecoflow-nut-bridge/.venv/bin/ecoflow-nut --config /etc/ecoflow-nut/config.yaml run
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Allow writing the dummy-ups state file under /var/run/nut.
+RuntimeDirectory=nut
+RuntimeDirectoryMode=0770
+
+[Install]
+WantedBy=multi-user.target

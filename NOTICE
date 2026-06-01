@@ -1,0 +1,29 @@
+ecoflow-nut-bridge
+==================
+
+This project is licensed under the MIT License (see LICENSE).
+
+The EcoFlow BLE protocol is not publicly documented; the framing, CRC,
+protobuf field numbers and handshake implemented here were derived from
+community reverse-engineering projects:
+
+  * rabits/ha-ef-ble                  (Apache License 2.0)
+        https://github.com/rabits/ha-ef-ble
+  * vwt12eh8/hassio-ecoflow
+        https://github.com/vwt12eh8/hassio-ecoflow
+  * tolwi/hassio-ecoflow-cloud
+        https://github.com/tolwi/hassio-ecoflow-cloud
+  * nielsole/ecoflow-bt-reverse-engineering
+        https://github.com/nielsole/ecoflow-bt-reverse-engineering
+  * anton-ptashnik/ecoflow-api-py
+
+Vendored material
+-----------------
+src/ecoflow_nut/keydata.py contains a firmware-derived constant key table
+required to derive the BLE session key during the EcoFlow encrypt_type 7
+(ECDH) handshake. It is reproduced verbatim from rabits/ha-ef-ble, which is
+distributed under the Apache License, Version 2.0. A copy of that license is
+available at https://www.apache.org/licenses/LICENSE-2.0 . The original
+copyright and license notices are retained in that file's header.
+
+This project is not affiliated with, authorized, or endorsed by EcoFlow.

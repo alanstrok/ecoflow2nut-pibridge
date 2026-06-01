@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ecoflow-nut-bridge"
+version = "0.1.0"
+description = "Expose an EcoFlow DELTA 3 portable power station as a standard NUT UPS over BLE."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [{ name = "ecoflow-nut-bridge contributors" }]
+keywords = ["ecoflow", "nut", "ups", "ble", "delta3"]
+dependencies = [
+    "bleak>=0.22",
+    "pyyaml>=6.0",
+    "structlog>=24.1",
+    "click>=8.1",
+    "pycryptodome>=3.20",
+    "ecdsa>=0.19",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
+    "black>=24.0",
+    "mypy>=1.10",
+    "types-PyYAML>=6.0",
+]
+
+[project.scripts]
+ecoflow-nut = "ecoflow_nut.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+ecoflow_nut = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 90
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "W"]
+ignore = ["B008"]  # click uses function calls in defaults
+
+[tool.black]
+line-length = 90
+target-version = ["py311"]
+
+[tool.mypy]
+python_version = "3.11"
+mypy_path = "src"
+files = ["src/ecoflow_nut"]
+ignore_missing_imports = true
+warn_unused_ignores = false
+check_untyped_defs = true
+disable_error_code = ["import-untyped"]
