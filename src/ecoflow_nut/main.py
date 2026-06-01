@@ -10,6 +10,8 @@ import time
 
 import structlog
 
+from . import delta3
+from .autoshutdown import AutoShutdownController, ShutdownAction
 from .ble_client import EcoFlowBLE
 from .config import Config, load_config
 from .delta3 import DeviceState
@@ -49,6 +51,8 @@ class Daemon:
         self._writer = NutWriter(config.nut)
         self._stop = asyncio.Event()
         self._last_write_monotonic = time.monotonic()
+        self._autoshutdown = AutoShutdownController(config.auto_shutdown)
+        self._active_client: EcoFlowBLE | None = None
 
     def request_stop(self, *_: object) -> None:
         log.info("daemon.stop_requested")
@@ -74,6 +78,7 @@ class Daemon:
                         raise TimeoutError("authentication/first-read timed out")
                     log.info("daemon.connected")
                     backoff = 1.0
+                    self._active_client = client
                     await self._poll_loop(client)
                 except asyncio.CancelledError:
                     raise
@@ -85,6 +90,7 @@ class Daemon:
                         error_repr=repr(exc),
                     )
                 finally:
+                    self._active_client = None
                     await client.disconnect()
 
                 if self._stop.is_set():
@@ -109,13 +115,73 @@ class Daemon:
             return
         variables = self._writer.write(state)
         self._last_write_monotonic = time.monotonic()
+        status = variables.get("ups.status", "OB")
         log.info(
             "state.updated",
             soc=state.soc_percent,
             ac_in=state.ac_input_watts,
             ac_out=state.ac_output_watts,
-            status=variables.get("ups.status"),
+            status=status,
         )
+
+        on_battery = status != "OL"
+        action = self._autoshutdown.evaluate(
+            time.monotonic(), state.soc_percent, on_battery
+        )
+        if action is not ShutdownAction.NONE:
+            self._handle_shutdown_action(action)
+
+    def _handle_shutdown_action(self, action: ShutdownAction) -> None:
+        cfg = self._config.auto_shutdown
+        if action is ShutdownAction.ARMED:
+            log.warning(
+                "auto_shutdown.armed",
+                trigger_soc=cfg.trigger_soc_percent,
+                grace_seconds=cfg.grace_period_seconds,
+            )
+        elif action is ShutdownAction.DISARMED:
+            log.info("auto_shutdown.disarmed")
+        elif action is ShutdownAction.CUT:
+            log.critical("auto_shutdown.cut", outputs=self._cut_outputs())
+            self._send_outputs(enabled=False)
+        elif action is ShutdownAction.RESTORE:
+            log.warning("auto_shutdown.restore", outputs=self._cut_outputs())
+            self._send_outputs(enabled=True)
+
+    def _cut_outputs(self) -> list[str]:
+        cfg = self._config.auto_shutdown
+        names = []
+        if cfg.cut_ac:
+            names.append("ac")
+        if cfg.cut_usb:
+            names.append("usb")
+        if cfg.cut_dc:
+            names.append("dc")
+        return names
+
+    def _send_outputs(self, enabled: bool) -> None:
+        cfg = self._config.auto_shutdown
+        client = self._active_client
+        if client is None:
+            log.error("auto_shutdown.no_client", note="cannot send output command")
+            return
+        packets = []
+        if cfg.cut_ac:
+            packets.append(delta3.set_ac_enabled_packet(enabled))
+        if cfg.cut_usb:
+            packets.append(delta3.set_usb_enabled_packet(enabled))
+        if cfg.cut_dc:
+            packets.append(delta3.set_dc_enabled_packet(enabled))
+
+        async def _send() -> None:
+            for packet in packets:
+                try:
+                    await client.send_command_packet(packet)
+                except Exception as exc:  # noqa: BLE001
+                    log.error("auto_shutdown.send_failed", error=str(exc))
+                await asyncio.sleep(0.3)
+
+        asyncio.create_task(_send())
 
     async def _watchdog(self) -> None:
         while not self._stop.is_set():

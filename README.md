@@ -39,8 +39,9 @@ Docker container (validation) and as a bare-metal systemd service (production);
 only the wrapper differs.
 
 It also exposes manual control commands — toggle **AC**, **USB** and **12V DC**
-outputs — as Python functions and a small CLI. These are **not** triggered
-automatically; auto-shutdown logic is a future iteration.
+outputs — as Python functions and a small CLI. An optional, opt-in
+**auto-shutdown** policy can cut AC output when the battery is critically low
+(see [Auto-shutdown](#auto-shutdown)); it is disabled by default.
 
 ## 2. Disclaimer
 
@@ -141,8 +142,8 @@ sudo systemctl start ecoflow-nut-bridge
 upsc ecoflow@localhost:4141
 ```
 
-> The Pi is powered from the DELTA 3's own USB-A port. Auto-shutdown based on
-> low battery is intentionally **not** wired up in this version.
+> The Pi is powered from the DELTA 3's own USB-A port, so keep `auto_shutdown.cut_usb`
+> at its default `false` — cutting USB would kill the bridge itself.
 
 ## 6. Configuration reference
 
@@ -161,9 +162,29 @@ Full annotated example: [`config/config.example.yaml`](config/config.example.yam
 | `nut.dev_file_path` | `/var/run/nut/ecoflow.dev` | dummy-ups state file (must match `ups.conf`) |
 | `nut.battery_capacity_wh` | `1024` | Pack capacity for runtime estimate |
 | `nut.thresholds.low_battery_percent` | `25` | SoC below this → `OB LB` |
-| `nut.thresholds.critical_battery_percent` | `10` | Reserved for future auto-cut |
+| `nut.thresholds.critical_battery_percent` | `10` | Informational; auto-cut uses `auto_shutdown.trigger_soc_percent` |
 | `nut.static_values.*` | — | Nameplate values reported verbatim (voltage, frequency, mfr, model, serial) |
 | `logging.level` / `logging.format` | `INFO` / `json` | structlog level and `json`/`console` output |
+| `auto_shutdown.enabled` | `false` | Master switch for the auto-cut policy (opt-in) |
+| `auto_shutdown.trigger_soc_percent` | `10` | Arm + cut at/below this SoC, on battery only |
+| `auto_shutdown.recover_soc_percent` | `15` | Disarm once SoC recovers to this (or AC returns) |
+| `auto_shutdown.grace_period_seconds` | `300` | Delay after arming before cutting |
+| `auto_shutdown.cut_ac` / `cut_usb` / `cut_dc` | `true`/`false`/`false` | Which outputs to cut |
+| `auto_shutdown.restore_on_recovery` | `false` | Re-enable cut outputs when power/SoC recovers |
+
+### Auto-shutdown
+
+Disabled by default. When `auto_shutdown.enabled` is true, the bridge watches for
+**on-battery + SoC ≤ `trigger_soc_percent`**. It then arms and waits
+`grace_period_seconds` — during which your NUT clients should already be shutting
+down off the `OB LB` status — before sending `set_ac_enabled(false)` once to cut
+the inverter. It re-arms only after recovery (AC returns, or SoC climbs to
+`recover_soc_percent`). `cut_usb`/`cut_dc` are available but default off; **never
+enable `cut_usb` if the bridge host is powered from the DELTA 3's USB port.**
+
+This complements — does not replace — normal NUT behaviour: clients shut
+themselves down from `ups.status` (`OB LB`); auto-shutdown additionally protects
+the pack by cutting output after they've gone down.
 
 ### NUT variable mapping
 

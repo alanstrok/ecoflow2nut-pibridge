@@ -49,3 +49,17 @@ nut:
 logging:
   level: "INFO"
   format: "json"   # or "console"
+
+# Optional auto-shutdown: cut the DELTA 3's output when the battery is critically
+# low while on battery. DISABLED by default -- cutting output is destructive.
+# The grace period lets NUT clients (Unraid/Synology) finish their own shutdown,
+# triggered by the OB LB status, before the inverter is cut.
+auto_shutdown:
+  enabled: false
+  trigger_soc_percent: 10        # arm + cut at/below this SoC (on battery only)
+  recover_soc_percent: 15        # disarm once SoC climbs back to this (or AC returns)
+  grace_period_seconds: 300      # wait this long after arming before cutting
+  cut_ac: true                   # turn off AC output
+  cut_usb: false                 # KEEP false if the bridge host is USB-powered
+  cut_dc: false                  # turn off 12V DC output
+  restore_on_recovery: false     # turn outputs back on when power/SoC recovers

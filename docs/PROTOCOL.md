@@ -61,4 +61,7 @@ these has **not** been confirmed on a real DELTA 3.
 3. **`flow_info_ac_out` (367)** is not present in every frame; `ac_output_on`
    stays last-known until a frame includes it. `ups.status` does not currently
    depend on it (it uses AC-input-present + SoC), so this is informational only.
-4. **Auto-shutdown / auto-cut** is intentionally out of scope for this version.
+4. **Auto-shutdown / auto-cut** cuts AC output (`set_ac_enabled(false)`) on
+   critical battery; it reuses the same `ConfigWrite` command path, so it shares
+   the "field numbers verified, hardware-untested" caveat above. Disabled by
+   default (`auto_shutdown.enabled`).

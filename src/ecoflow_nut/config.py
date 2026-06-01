@@ -70,11 +70,30 @@ class LoggingConfig:
 
 
 @dataclass(slots=True)
+class AutoShutdownConfig:
+    """Policy for automatically cutting the DELTA 3's output on critical battery.
+
+    Disabled by default -- cutting output is destructive. Only acts while on
+    battery; the grace period gives NUT clients time to shut down first.
+    """
+
+    enabled: bool = False
+    trigger_soc_percent: int = 10
+    recover_soc_percent: int = 15
+    grace_period_seconds: int = 300
+    cut_ac: bool = True
+    cut_usb: bool = False  # never default true: a Pi may be powered from USB
+    cut_dc: bool = False
+    restore_on_recovery: bool = False
+
+
+@dataclass(slots=True)
 class Config:
     ecoflow: EcoflowConfig
     ble: BleConfig = field(default_factory=BleConfig)
     nut: NutConfig = field(default_factory=NutConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    auto_shutdown: AutoShutdownConfig = field(default_factory=AutoShutdownConfig)
 
 
 def _filter(cls: type, data: dict[str, Any]) -> dict[str, Any]:
@@ -105,5 +124,14 @@ def load_config(path: str | Path) -> Config:
     )
 
     logging_cfg = LoggingConfig(**_filter(LoggingConfig, raw.get("logging", {})))
+    auto_shutdown = AutoShutdownConfig(
+        **_filter(AutoShutdownConfig, raw.get("auto_shutdown", {}))
+    )
 
-    return Config(ecoflow=ecoflow, ble=ble, nut=nut, logging=logging_cfg)
+    return Config(
+        ecoflow=ecoflow,
+        ble=ble,
+        nut=nut,
+        logging=logging_cfg,
+        auto_shutdown=auto_shutdown,
+    )
