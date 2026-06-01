@@ -72,8 +72,14 @@ class DeviceState:
 
     @property
     def is_complete(self) -> bool:
-        """True once the essential fields (SoC + AC status) have been seen."""
-        return self.soc_percent is not None and self.ac_input_present is not None
+        """True once the essential value (SoC) has been seen.
+
+        The DELTA 3 does not include every field in every frame -- notably the
+        AC-charger flag (field 202) is often absent -- so we only require SoC to
+        start publishing. AC presence falls back to AC input watts when the flag
+        has not been seen yet (see ``nut_writer.derive_status``).
+        """
+        return self.soc_percent is not None
 
     def merge_display_payload(self, payload: bytes) -> None:
         """Merge a DisplayPropertyUpload protobuf payload into this state."""

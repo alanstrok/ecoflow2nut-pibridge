@@ -41,6 +41,18 @@ def test_status_ac_present_but_negligible_draw_is_on_battery(nut):
     assert derive_status(state, nut) == "OB"
 
 
+def test_status_infers_ac_from_watts_when_flag_absent(nut):
+    # The DELTA 3 omits the AC-charger flag in many frames; fall back to watts.
+    state = DeviceState(soc_percent=80, ac_input_present=None, ac_input_watts=300)
+    assert derive_status(state, nut) == "OL"
+
+
+def test_state_complete_with_soc_only():
+    # Publishing must not require the AC-charger flag, only SoC.
+    assert DeviceState(soc_percent=80).is_complete is True
+    assert DeviceState().is_complete is False
+
+
 def test_runtime_idle_when_no_load(nut):
     state = DeviceState(soc_percent=50, ac_output_watts=0)
     assert estimate_runtime_seconds(state, nut) == 99999

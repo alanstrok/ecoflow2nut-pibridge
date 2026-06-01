@@ -570,8 +570,23 @@ class EcoFlowBLE:
             self._authenticated.set()
             log.info("ble.authenticated")
 
+        log.debug(
+            "ble.packet",
+            src=f"0x{packet.src:02x}",
+            cmd_set=f"0x{packet.cmd_set:02x}",
+            cmd_id=f"0x{packet.cmd_id:02x}",
+            plen=len(packet.payload),
+        )
+
         if delta3.DISPLAY_SRC == packet.src and self.state.is_display_packet(packet):
             self.state.merge_display_payload(packet.payload)
+            log.debug(
+                "ble.display",
+                soc=self.state.soc_percent,
+                ac_present=self.state.ac_input_present,
+                ac_in=self.state.ac_input_watts,
+                ac_out=self.state.ac_output_watts,
+            )
             self._last_read_monotonic = asyncio.get_event_loop().time()
             if self._on_state is not None:
                 self._on_state(self.state)

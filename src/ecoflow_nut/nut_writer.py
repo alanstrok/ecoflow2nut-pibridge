@@ -31,8 +31,13 @@ def derive_status(state: DeviceState, nut: NutConfig) -> str:
     * On battery + low (``OB LB``) when SoC drops below the low threshold.
     * Otherwise on battery (``OB``).
     """
-    ac_present = bool(state.ac_input_present)
     ac_watts = state.ac_input_watts or 0.0
+    # The DELTA 3 does not include the AC-charger flag in every frame; until we
+    # have seen it, infer AC presence from AC input watts.
+    if state.ac_input_present is not None:
+        ac_present = state.ac_input_present
+    else:
+        ac_present = ac_watts > nut.ac_input_present_min_watts
     soc = state.soc_percent if state.soc_percent is not None else 100.0
 
     if ac_present and ac_watts > nut.ac_input_present_min_watts:
