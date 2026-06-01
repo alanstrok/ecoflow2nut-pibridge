@@ -78,7 +78,12 @@ class Daemon:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:  # noqa: BLE001
-                    log.error("daemon.connection_error", error=str(exc))
+                    log.error(
+                        "daemon.connection_error",
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                        error_repr=repr(exc),
+                    )
                 finally:
                     await client.disconnect()
 

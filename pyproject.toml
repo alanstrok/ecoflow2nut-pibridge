@@ -13,6 +13,7 @@ authors = [{ name = "ecoflow-nut-bridge contributors" }]
 keywords = ["ecoflow", "nut", "ups", "ble", "delta3"]
 dependencies = [
     "bleak>=0.22",
+    "bleak-retry-connector>=3.5",
     "pyyaml>=6.0",
     "structlog>=24.1",
     "click>=8.1",

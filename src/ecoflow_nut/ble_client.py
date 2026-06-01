@@ -352,14 +352,40 @@ class EcoFlowBLE:
         log.info("ble.found", mac=mac, encrypt_type=self._encrypt_type)
 
         self._authenticated.clear()
-        self._client = BleakClient(
-            device,
-            timeout=self._ble.connect_timeout_seconds,
-            disconnected_callback=self._on_disconnect,
-        )
-        await self._client.connect()
+        log.debug("ble.connecting", mac=mac)
+        self._client = await self._establish(device)
+        log.info("ble.connected", mac=mac)
         self._resolve_characteristics()
+        log.debug(
+            "ble.characteristics",
+            notify=self._notify_uuid,
+            write=self._write_uuid,
+        )
+        log.info("ble.handshake_start", encrypt_type=self._encrypt_type)
         await self._handshake()
+        log.info("ble.handshake_done")
+
+    async def _establish(self, device: BLEDevice) -> BleakClient:
+        """Connect, preferring bleak-retry-connector to survive BlueZ's habit of
+        accepting a connection and then immediately dropping it on first tries."""
+        try:
+            from bleak_retry_connector import establish_connection
+        except ImportError:
+            client = BleakClient(
+                device,
+                timeout=self._ble.connect_timeout_seconds,
+                disconnected_callback=self._on_disconnect,
+            )
+            await client.connect()
+            return client
+
+        return await establish_connection(
+            BleakClient,
+            device,
+            device.name or self._ecoflow.mac,
+            disconnected_callback=self._on_disconnect,
+            max_attempts=4,
+        )
 
     async def _find_device(self, mac: str) -> tuple[BLEDevice | None, object]:
         found: dict[str, tuple[BLEDevice, object]] = {}
@@ -424,12 +450,14 @@ class EcoFlowBLE:
         public_key = private_key.get_verifying_key()
 
         # Step 1: exchange public keys.
+        log.debug("ecdh.step1_send_pubkey")
         resp = await self._request(
             encode_enc_packet(_FRAME_COMMAND, b"\x01\x00" + public_key.to_string())
         )
+        log.debug("ecdh.step1_resp", hex=resp[:64].hex(), length=len(resp))
         simple = self._parse_simple(resp)
         if simple is None or len(simple) < 3:
-            raise BleakConnectionError("ECDH: invalid public key response")
+            raise BleakConnectionError(f"ECDH: invalid public key response: {resp.hex()}")
         ecdh_size = _ecdh_type_size(simple[2])
         dev_pub = ecdsa.VerifyingKey.from_string(
             simple[3 : 3 + ecdh_size], curve=ecdsa.SECP160r1
@@ -439,21 +467,27 @@ class EcoFlowBLE:
         ).generate_sharedsecret_bytes()
         iv = hashlib.md5(shared).digest()
         self._encryption = Type7Encryption(shared[:16], iv)
+        log.debug("ecdh.step1_shared_ok", curve_type=simple[2])
 
         # Step 2: get key info and derive the session key.
+        log.debug("ecdh.step2_send_keyinfo")
         resp = await self._request(encode_enc_packet(_FRAME_COMMAND, b"\x02"))
+        log.debug("ecdh.step2_resp", hex=resp[:64].hex(), length=len(resp))
         enc = self._parse_simple(resp)
         if enc is None or enc[0] != 0x02:
-            raise BleakConnectionError("ECDH: invalid key-info response")
+            raise BleakConnectionError(f"ECDH: invalid key-info response: {resp.hex()}")
         decrypted = self._encryption.decrypt(enc[1:])
         session_key = gen_session_key(decrypted[16:18], decrypted[:16])
         self._encryption = Type7Encryption(session_key, iv)
         self._assembler = EncPacketAssembler(self._encryption)
+        log.debug("ecdh.step2_session_key_ok")
 
         # Step 3: auth status, then authenticate.
+        log.debug("ecdh.step3_auth")
         await self._send_packet(Packet(0x21, _AUTH_DST, 0x35, 0x89, b"", 0x01, 0x01, 3))
         await self._start_notify(self._on_notify)
         await self._auto_authenticate()
+        log.debug("ecdh.step3_auth_sent")
 
     async def _auto_authenticate(self) -> None:
         digest = hashlib.md5(
@@ -490,8 +524,10 @@ class EcoFlowBLE:
 
         await self._client.start_notify(self._notify_uuid, _cb)
         try:
+            log.debug("ble.request_write", length=len(data), hex=data[:48].hex())
             await self._write(data)
-            return await asyncio.wait_for(future, timeout=timeout)
+            resp = await asyncio.wait_for(future, timeout=timeout)
+            return resp
         finally:
             try:
                 await self._client.stop_notify(self._notify_uuid)
@@ -514,6 +550,7 @@ class EcoFlowBLE:
 
     # -- notifications ------------------------------------------------------ #
     def _on_notify(self, _char: BleakGATTCharacteristic, value: bytearray) -> None:
+        log.debug("ble.notify", length=len(value), hex=bytes(value[:48]).hex())
         try:
             payloads = self._assembler.reassemble(bytes(value))
         except Exception as exc:  # noqa: BLE001
