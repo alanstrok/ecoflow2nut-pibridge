@@ -2,14 +2,16 @@
 # Uses the published multi-arch image from GHCR.
 services:
   ecoflow-nut-bridge:
-    image: ghcr.io/alanstrok/ecoflow2nut-pibridge:latest
+    image: ghcr.io/alanstrok/ecoflow2nut-pibridge:dev
     container_name: ecoflow-nut-bridge
-    # host networking so upsd is reachable on the LAN at <host>:3493
+    # host networking: required so the container can see the kernel Bluetooth
+    # adapter (hci0 is only exposed in the host network namespace) and so upsd
+    # is reachable on the LAN at <host>:3493.
     network_mode: host
-    # privileged + dbus mount are required for BLE access via BlueZ
+    # privileged is required for BLE access; the container runs its own
+    # bluetoothd, so no host D-Bus mount is needed.
     privileged: true
     volumes:
-      - /var/run/dbus:/var/run/dbus
       - ./config/config.yaml:/app/config/config.yaml:ro
     restart: unless-stopped
     environment:

@@ -226,9 +226,14 @@ Your unit uses the encrypted handshake. Set `ecoflow.user_id` (see
 at the `encrypt_type` in the `ble.found` log line.
 
 **Realtek RTL8821CU dongle issues (Unraid).**
-The chip needs firmware/driver support in the host kernel. Verify the adapter
-appears with `hciconfig`/`bluetoothctl list` on the host before starting the
-container. If `hci0` is busy, set `ble.adapter` accordingly.
+The chip needs firmware/driver support in the **host kernel** — verify with
+`dmesg | grep -i bluetooth` that the firmware loaded and `hci0` was registered.
+The container ships and starts its own `bluetoothd` + D-Bus, so the host does
+**not** need a BlueZ userspace (Unraid has none by default). However, the kernel
+only exposes the Bluetooth adapter in the **host network namespace**, so the
+container must run with **host networking** for BLE to work — in `bridge` mode
+the container will not see `hci0`. If you have a working host BlueZ and prefer to
+use it, set `ECOFLOW_USE_HOST_DBUS=1` and bind-mount `/var/run/dbus`.
 
 **Frequent BLE disconnects.**
 Expected — the bridge reconnects with exponential backoff (up to

@@ -26,9 +26,12 @@ FROM python:3.12-slim AS runtime
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1
 
-# Runtime deps: BlueZ for BLE, NUT server + client.
+# Runtime deps: BlueZ for BLE, a D-Bus daemon for BlueZ to register on, and the
+# NUT server + client. The container runs its own bluetoothd so it does not
+# depend on the host having a BlueZ userspace.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         bluez \
+        dbus \
         nut-server \
         nut-client \
     && rm -rf /var/lib/apt/lists/*

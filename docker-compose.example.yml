@@ -6,10 +6,12 @@ services:
   ecoflow-nut-bridge:
     image: ghcr.io/<owner>/ecoflow-nut-bridge:latest
     container_name: ecoflow-nut-bridge
-    network_mode: host        # exposes NUT on <host>:3493
+    # host networking is required for BLE: the kernel only exposes the Bluetooth
+    # adapter (hci0) in the host network namespace. It also publishes upsd on
+    # <host>:3493. The container runs its own bluetoothd (no host D-Bus mount).
+    network_mode: host
     privileged: true          # required for BLE / BlueZ access
     volumes:
-      - /var/run/dbus:/var/run/dbus
       - ./config/config.yaml:/app/config/config.yaml:ro
     restart: unless-stopped
     environment:
