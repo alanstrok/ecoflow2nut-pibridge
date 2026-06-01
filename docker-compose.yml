@@ -6,7 +6,7 @@ services:
     container_name: ecoflow-nut-bridge
     # host networking: required so the container can see the kernel Bluetooth
     # adapter (hci0 is only exposed in the host network namespace) and so upsd
-    # is reachable on the LAN at <host>:3493.
+    # is reachable on the LAN at <host>:4141.
     network_mode: host
     # privileged is required for BLE access; the container runs its own
     # bluetoothd, so no host D-Bus mount is needed.

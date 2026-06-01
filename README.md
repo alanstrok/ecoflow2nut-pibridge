@@ -4,7 +4,7 @@ Expose an **EcoFlow DELTA 3** portable power station as a standard
 **NUT (Network UPS Tools)** UPS over Bluetooth Low Energy. The bridge polls the
 DELTA 3 over BLE, translates its telemetry (state of charge, AC input/output
 watts, AC-input-present) into NUT variables, writes a `dummy-ups` state file and
-runs `upsd` on port 3493 — so any NUT client (Unraid's built-in client,
+runs `upsd` on port 4141 — so any NUT client (Unraid's built-in client,
 Synology, `upsc`, …) can monitor the DELTA 3 as if it were a normal UPS.
 
 > ⚠️ **Disclaimer.** This project is **not affiliated with, authorized, or
@@ -34,7 +34,7 @@ Synology, `upsc`, …) can monitor the DELTA 3 as if it were a normal UPS.
 A single async daemon connects to the DELTA 3 over BLE, polls state every few
 seconds, derives NUT `ups.status` / `battery.charge` / `ups.load` / runtime, and
 keeps a `dummy-ups` `.dev` file fresh. The NUT `dummy-ups` driver re-reads that
-file and `upsd` serves it on 3493. The same Python code runs unchanged in a
+file and `upsd` serves it on 4141. The same Python code runs unchanged in a
 Docker container (validation) and as a bare-metal systemd service (production);
 only the wrapper differs.
 
@@ -97,13 +97,15 @@ The container bundles BlueZ, the NUT server, and the bridge daemon.
    docker compose logs -f
    ```
 
-   It runs with `network_mode: host` (so `upsd` is reachable at `<host>:3493`),
-   `privileged: true`, and `/var/run/dbus` mounted — all required for BLE.
+   It runs with `network_mode: host` (so the container can see the kernel
+   Bluetooth adapter and `upsd` is reachable at `<host>:4141`) and
+   `privileged: true`. The container starts its own `bluetoothd`, so no host
+   D-Bus mount is needed.
 
 3. Verify:
 
    ```bash
-   docker exec ecoflow-nut-bridge upsc ecoflow@localhost
+   docker exec ecoflow-nut-bridge upsc ecoflow@localhost:4141
    ```
 
    You should see sensible `battery.charge`, `ups.status`, `ups.load`, etc.
@@ -136,7 +138,7 @@ sudo nano /etc/ecoflow-nut/config.yaml   # MAC / serial / user_id
 sudo nano /etc/nut/upsd.users            # set real passwords
 sudo systemctl restart nut-server
 sudo systemctl start ecoflow-nut-bridge
-upsc ecoflow@localhost
+upsc ecoflow@localhost:4141
 ```
 
 > The Pi is powered from the DELTA 3's own USB-A port. Auto-shutdown based on
@@ -192,7 +194,7 @@ Settings → **UPS Settings**:
 
 * UPS Type / mode: **Network UPS Tools — remote** (or "Custom").
 * Remote NUT server IP: the bridge host.
-* UPS name: `ecoflow`, port `3493`.
+* UPS name: `ecoflow`, port `4141`.
 * Username/password: the `monuser` credentials from `upsd.users`.
 
 ### Synology DSM
@@ -207,8 +209,8 @@ Control Panel → **Hardware & Power → UPS**:
 ### Any host with `upsc`
 
 ```bash
-upsc ecoflow@<bridge-host>
-upsc ecoflow@<bridge-host> battery.charge
+upsc ecoflow@<bridge-host>:4141
+upsc ecoflow@<bridge-host>:4141 battery.charge
 ```
 
 ## 8. Troubleshooting
@@ -265,7 +267,7 @@ and AC status appear within a few seconds of connecting.
                           │                                       │   driver    │ │
                           │                                       └──────┬──────┘ │
                           │                                  ┌───────────▼──────┐ │
-   NUT clients  ◀─────────┼──────────  TCP :3493  ──────────│       upsd        │ │
+   NUT clients  ◀─────────┼──────────  TCP :4141  ──────────│       upsd        │ │
   (Unraid, Synology,      │                                  └──────────────────┘ │
    upsc, …)               └───────────────────────────────────────────────────────┘
 ```

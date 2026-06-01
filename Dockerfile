@@ -48,9 +48,9 @@ COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
 WORKDIR /app
-EXPOSE 3493
+EXPOSE 4141
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD upsc ecoflow@localhost >/dev/null 2>&1 || exit 1
+    CMD upsc ecoflow@localhost:4141 >/dev/null 2>&1 || exit 1
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

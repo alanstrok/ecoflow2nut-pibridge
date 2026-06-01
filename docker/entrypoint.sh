@@ -107,7 +107,7 @@ echo "[entrypoint] starting NUT driver + upsd..."
 upsdrvctl start
 upsd
 
-echo "[entrypoint] up; serving NUT on 3493."
+echo "[entrypoint] up; serving NUT on 4141."
 
 # Supervise: exit (and let Docker restart us) if the bridge dies.
 while kill -0 "${BRIDGE_PID}" 2>/dev/null; do
