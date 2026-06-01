@@ -40,7 +40,7 @@ COPY --from=builder /opt/venv /opt/venv
 
 # NUT configuration. upsd drops privileges to the "nut" user (created by the
 # nut-server package).
-COPY nut/ups.conf nut/upsd.conf nut/upsd.users nut/upsmon.conf /etc/nut/
+COPY nut/nut.conf nut/ups.conf nut/upsd.conf nut/upsd.users nut/upsmon.conf /etc/nut/
 RUN chown -R nut:nut /etc/nut && chmod 640 /etc/nut/upsd.users
 
 COPY config/config.example.yaml /app/config/config.example.yaml
