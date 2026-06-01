@@ -59,6 +59,11 @@ auto_shutdown:
   trigger_soc_percent: 10        # arm + cut at/below this SoC (on battery only)
   recover_soc_percent: 15        # disarm once SoC climbs back to this (or AC returns)
   grace_period_seconds: 300      # wait this long after arming before cutting
+  # Low-load trigger: when on battery and AC output stays at/below this many
+  # watts for load_grace_seconds, cut AC (the protected gear has powered off).
+  # Applies at any SoC. Leave null/omit to disable. Example: 15
+  min_load_watts: null
+  load_grace_seconds: 60
   cut_ac: true                   # turn off AC output
   cut_usb: false                 # KEEP false if the bridge host is USB-powered
   cut_dc: false                  # turn off 12V DC output

@@ -81,6 +81,11 @@ class AutoShutdownConfig:
     trigger_soc_percent: int = 10
     recover_soc_percent: int = 15
     grace_period_seconds: int = 300
+    # Low-load trigger: when on battery and AC output stays at/below
+    # min_load_watts for load_grace_seconds, cut (a "protected gear has powered
+    # off" signal). None disables this trigger.
+    min_load_watts: float | None = None
+    load_grace_seconds: int = 60
     cut_ac: bool = True
     cut_usb: bool = False  # never default true: a Pi may be powered from USB
     cut_dc: bool = False

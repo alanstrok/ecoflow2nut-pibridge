@@ -168,19 +168,29 @@ Full annotated example: [`config/config.example.yaml`](config/config.example.yam
 | `auto_shutdown.enabled` | `false` | Master switch for the auto-cut policy (opt-in) |
 | `auto_shutdown.trigger_soc_percent` | `10` | Arm + cut at/below this SoC, on battery only |
 | `auto_shutdown.recover_soc_percent` | `15` | Disarm once SoC recovers to this (or AC returns) |
-| `auto_shutdown.grace_period_seconds` | `300` | Delay after arming before cutting |
+| `auto_shutdown.grace_period_seconds` | `300` | Delay after arming (SoC trigger) before cutting |
+| `auto_shutdown.min_load_watts` | `null` | Low-load trigger: cut when AC output stays ≤ this (on battery, any SoC). `null` disables |
+| `auto_shutdown.load_grace_seconds` | `60` | Debounce for the low-load trigger |
 | `auto_shutdown.cut_ac` / `cut_usb` / `cut_dc` | `true`/`false`/`false` | Which outputs to cut |
 | `auto_shutdown.restore_on_recovery` | `false` | Re-enable cut outputs when power/SoC recovers |
 
 ### Auto-shutdown
 
-Disabled by default. When `auto_shutdown.enabled` is true, the bridge watches for
-**on-battery + SoC ≤ `trigger_soc_percent`**. It then arms and waits
-`grace_period_seconds` — during which your NUT clients should already be shutting
-down off the `OB LB` status — before sending `set_ac_enabled(false)` once to cut
-the inverter. It re-arms only after recovery (AC returns, or SoC climbs to
-`recover_soc_percent`). `cut_usb`/`cut_dc` are available but default off; **never
-enable `cut_usb` if the bridge host is powered from the DELTA 3's USB port.**
+Disabled by default. When `auto_shutdown.enabled` is true, **two independent
+triggers** (either can fire, both only while on battery) arm a cut:
+
+- **SoC trigger** — SoC drops to `trigger_soc_percent`, then after
+  `grace_period_seconds` (during which your NUT clients shut down off the
+  `OB LB` status) it sends `set_ac_enabled(false)` once. Re-arms only after
+  recovery; a climb back to `recover_soc_percent` disarms it.
+- **Low-load trigger** — AC output stays at/below `min_load_watts` for
+  `load_grace_seconds`, at **any** SoC. This catches "the protected equipment
+  has finished shutting down, so there's nothing left to power" and cuts the
+  idle inverter to preserve the battery. A load above the threshold resets the
+  debounce. Disabled unless `min_load_watts` is set.
+
+`cut_usb`/`cut_dc` are available but default off; **never enable `cut_usb` if the
+bridge host is powered from the DELTA 3's USB port.**
 
 This complements — does not replace — normal NUT behaviour: clients shut
 themselves down from `ups.status` (`OB LB`); auto-shutdown additionally protects

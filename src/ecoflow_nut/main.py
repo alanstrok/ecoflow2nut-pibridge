@@ -126,7 +126,10 @@ class Daemon:
 
         on_battery = status != "OL"
         action = self._autoshutdown.evaluate(
-            time.monotonic(), state.soc_percent, on_battery
+            time.monotonic(),
+            state.soc_percent,
+            on_battery,
+            state.ac_output_watts,
         )
         if action is not ShutdownAction.NONE:
             self._handle_shutdown_action(action)

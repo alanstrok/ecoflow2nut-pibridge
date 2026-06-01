@@ -86,3 +86,45 @@ def test_no_restore_when_disabled():
     c = AutoShutdownController(_cfg(grace_period_seconds=0, restore_on_recovery=False))
     assert c.evaluate(0, 9, on_battery=True) is ShutdownAction.CUT
     assert c.evaluate(10, 9, on_battery=False) is ShutdownAction.DISARMED
+
+
+# --- low-load trigger -------------------------------------------------------- #
+def test_low_load_cuts_after_debounce_at_any_soc():
+    c = AutoShutdownController(_cfg(min_load_watts=15, load_grace_seconds=60))
+    # Healthy SoC, but on battery with a low load -> arm the load trigger.
+    assert c.evaluate(0, 90, on_battery=True, output_watts=5) is ShutdownAction.ARMED
+    assert c.evaluate(30, 90, on_battery=True, output_watts=5) is ShutdownAction.NONE
+    assert c.evaluate(60, 90, on_battery=True, output_watts=5) is ShutdownAction.CUT
+
+
+def test_low_load_debounce_resets_on_load_return():
+    c = AutoShutdownController(_cfg(min_load_watts=15, load_grace_seconds=60))
+    assert c.evaluate(0, 90, on_battery=True, output_watts=5) is ShutdownAction.ARMED
+    # Load comes back above threshold before the debounce elapses -> disarm.
+    assert (
+        c.evaluate(30, 90, on_battery=True, output_watts=200) is ShutdownAction.DISARMED
+    )
+    assert c.armed is False
+    # Still below grace from a fresh arm afterwards.
+    assert c.evaluate(40, 90, on_battery=True, output_watts=5) is ShutdownAction.ARMED
+    assert c.evaluate(99, 90, on_battery=True, output_watts=5) is ShutdownAction.NONE
+    assert c.evaluate(100, 90, on_battery=True, output_watts=5) is ShutdownAction.CUT
+
+
+def test_low_load_inactive_when_unconfigured():
+    c = AutoShutdownController(_cfg())  # min_load_watts None
+    assert c.evaluate(0, 90, on_battery=True, output_watts=0) is ShutdownAction.NONE
+    assert c.evaluate(1000, 90, on_battery=True, output_watts=0) is ShutdownAction.NONE
+
+
+def test_low_load_only_on_battery():
+    c = AutoShutdownController(_cfg(min_load_watts=15, load_grace_seconds=0))
+    # On line power: low load must not cut.
+    assert c.evaluate(0, 90, on_battery=False, output_watts=0) is ShutdownAction.NONE
+    assert c.armed is False
+
+
+def test_soc_trigger_still_wins_when_load_high():
+    c = AutoShutdownController(_cfg(min_load_watts=15, grace_period_seconds=0))
+    # Heavy load but critically low SoC -> SoC trigger cuts.
+    assert c.evaluate(0, 8, on_battery=True, output_watts=500) is ShutdownAction.CUT
