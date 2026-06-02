@@ -1,22 +1,30 @@
 [Unit]
 Description=EcoFlow NUT Bridge
-After=network.target bluetooth.target nut-server.service
+After=network.target bluetooth.target
 Wants=bluetooth.target
+# Start before NUT so the dummy-ups state file is seeded (ExecStartPre below)
+# before the driver reads it. install.sh also adds a matching After= drop-in to
+# nut-server so the ordering holds from both sides.
+Before=nut-server.service
 
 [Service]
 Type=simple
 User=ecoflow
 Group=nut
 WorkingDirectory=/opt/ecoflow-nut-bridge
+# Seed an initial state file so the dummy-ups driver has something to read at
+# boot. Best-effort ("-"): a hiccup here must not stop the bridge itself.
+ExecStartPre=-/opt/ecoflow-nut-bridge/.venv/bin/ecoflow-nut --config /etc/ecoflow-nut/config.yaml seed
 ExecStart=/opt/ecoflow-nut-bridge/.venv/bin/ecoflow-nut --config /etc/ecoflow-nut/config.yaml run
 Restart=always
 RestartSec=10
 StandardOutput=journal
 StandardError=journal
 
-# Allow writing the dummy-ups state file under /var/run/nut.
-RuntimeDirectory=nut
-RuntimeDirectoryMode=0770
+# Note: /run/nut is created and owned by the nut-server package (nut:nut, 0770);
+# the ecoflow user is added to the nut group so it can write the state file.
+# We deliberately do NOT use RuntimeDirectory=nut here -- that would delete
+# /run/nut when the bridge restarts and break a running upsd.
 
 [Install]
 WantedBy=multi-user.target

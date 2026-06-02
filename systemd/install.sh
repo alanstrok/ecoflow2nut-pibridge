@@ -70,6 +70,20 @@ chown -R ecoflow:nut "${CONF_DIR}"
 
 echo "==> Installing systemd unit..."
 cp "${REPO_DIR}/systemd/${SERVICE}" "/etc/systemd/system/${SERVICE}"
+
+# Order NUT to start after the bridge, so the bridge's ExecStartPre 'seed' has
+# written the dummy-ups state file before the driver tries to read it at boot.
+# A drop-in for a unit that does not exist on this system is harmless.
+for unit in nut-server.service nut-driver-enumerator.service; do
+    dropin="/etc/systemd/system/${unit}.d"
+    mkdir -p "${dropin}"
+    cat > "${dropin}/ecoflow-bridge.conf" <<EOF
+[Unit]
+After=${SERVICE}
+Wants=${SERVICE}
+EOF
+done
+
 systemctl daemon-reload
 systemctl enable nut-server.service 2>/dev/null || true
 systemctl enable "${SERVICE}"
@@ -79,9 +93,9 @@ cat <<EOF
 ==> Done.
 
 Next steps:
-  1. Edit ${CONF_DIR}/config.yaml (MAC, serial, and user_id if needed).
+  1. Edit ${CONF_DIR}/config.yaml (MAC, serial, user_id; auto_shutdown if wanted).
   2. Edit ${NUT_CONF_DIR}/upsd.users to set real passwords.
-  3. Start NUT:    sudo systemctl restart nut-server
-  4. Start bridge: sudo systemctl start ${SERVICE}
-  5. Verify:       upsc ecoflow@localhost
+  3. Start bridge: sudo systemctl start ${SERVICE}
+  4. Start NUT:    sudo systemctl restart nut-server
+  5. Verify:       upsc ecoflow@localhost:4141
 EOF

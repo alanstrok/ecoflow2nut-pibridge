@@ -24,6 +24,13 @@ log = structlog.get_logger(__name__)
 WATCHDOG_TIMEOUT_SECONDS = 120
 
 
+def seed_state() -> DeviceState:
+    """Placeholder telemetry used before the first BLE read (reads as ``OL``)."""
+    return DeviceState(
+        soc_percent=100, ac_input_present=True, ac_input_watts=100, ac_output_watts=0
+    )
+
+
 def configure_logging(level: str, fmt: str) -> None:
     """Configure structlog for JSON or console output."""
     renderer = (
@@ -60,8 +67,9 @@ class Daemon:
 
     async def run(self) -> int:
         # Seed the NUT file immediately so clients have something to read while
-        # we establish the first BLE connection.
-        self._writer.write(DeviceState(soc_percent=100, ac_input_present=True))
+        # we establish the first BLE connection. Default optimistically to
+        # "online" so clients do not briefly see "on battery" at startup.
+        self._writer.write(seed_state())
 
         watchdog = asyncio.create_task(self._watchdog())
         try:

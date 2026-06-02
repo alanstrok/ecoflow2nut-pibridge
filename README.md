@@ -130,17 +130,25 @@ The installer:
 * builds a venv at `/opt/ecoflow-nut-bridge/.venv` and installs the package;
 * drops NUT config into `/etc/nut/` and sets `MODE=netserver`;
 * installs config at `/etc/ecoflow-nut/config.yaml`;
-* installs and enables the `ecoflow-nut-bridge.service` systemd unit.
+* installs and enables the `ecoflow-nut-bridge.service` systemd unit;
+* adds a drop-in so `nut-server` starts **after** the bridge. The bridge's
+  `ExecStartPre` seeds the dummy-ups state file first, so the driver always has
+  a file to read at boot (otherwise `dummy-ups` fails on a cold start and NUT
+  stays down until a manual restart).
 
 Then:
 
 ```bash
-sudo nano /etc/ecoflow-nut/config.yaml   # MAC / serial / user_id
+sudo nano /etc/ecoflow-nut/config.yaml   # MAC / serial / user_id / auto_shutdown
 sudo nano /etc/nut/upsd.users            # set real passwords
-sudo systemctl restart nut-server
-sudo systemctl start ecoflow-nut-bridge
+sudo systemctl start ecoflow-nut-bridge  # seeds the state file, then connects
+sudo systemctl restart nut-server        # starts upsd + dummy-ups driver
 upsc ecoflow@localhost:4141
 ```
+
+Raspberry Pi OS runs `bluetoothd` by default, so BLE works without extra setup
+(unlike the bare Unraid host). Watch progress with `journalctl -u
+ecoflow-nut-bridge -f` — look for `ble.authenticated` then `state.updated`.
 
 > The Pi is powered from the DELTA 3's own USB-A port, so keep `auto_shutdown.cut_usb`
 > at its default `false` — cutting USB would kill the bridge itself.

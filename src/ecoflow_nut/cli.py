@@ -13,8 +13,8 @@ from . import delta3
 from .ble_client import EcoFlowBLE
 from .config import Config, load_config
 from .delta3 import DeviceState
-from .main import configure_logging, run_daemon
-from .nut_writer import build_variables
+from .main import configure_logging, run_daemon, seed_state
+from .nut_writer import NutWriter, build_variables
 
 log = structlog.get_logger(__name__)
 
@@ -139,6 +139,20 @@ _register_toggle(dc, delta3.set_dc_enabled_packet)
 def run(ctx: click.Context) -> None:
     """Run the bridge daemon (default deployment mode)."""
     sys.exit(run_daemon(ctx.obj["config_path"]))
+
+
+@cli.command()
+@click.pass_context
+def seed(ctx: click.Context) -> None:
+    """Write an initial placeholder NUT state file.
+
+    Used as a systemd ExecStartPre so the dummy-ups driver has a file to read
+    before the first BLE telemetry arrives (otherwise the driver fails at boot).
+    """
+    config = load_config(ctx.obj["config_path"])
+    configure_logging(config.logging.level, config.logging.format)
+    NutWriter(config.nut).write(seed_state())
+    click.echo(f"seeded {config.nut.dev_file_path}")
 
 
 def main() -> None:
