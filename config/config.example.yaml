@@ -50,6 +50,11 @@ logging:
   level: "INFO"
   format: "json"   # or "console"
 
+# Local control socket. The running daemon listens here so the CLI (and the
+# auto-shutdown logic) can send output commands over the daemon's existing BLE
+# connection, without stopping the bridge. Must be writable by the service user.
+control_socket_path: "/var/run/nut/ecoflow-nut.sock"
+
 # Optional auto-shutdown: cut the DELTA 3's output when the battery is critically
 # low while on battery. DISABLED by default -- cutting output is destructive.
 # The grace period lets NUT clients (Unraid/Synology) finish their own shutdown,

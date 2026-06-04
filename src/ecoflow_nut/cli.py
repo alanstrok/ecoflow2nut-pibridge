@@ -4,16 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket as _socket
 import sys
 
 import click
 import structlog
 
-from . import delta3
 from .ble_client import EcoFlowBLE
 from .config import Config, load_config
 from .delta3 import DeviceState
-from .main import configure_logging, run_daemon, seed_state
+from .main import OUTPUT_BUILDERS, configure_logging, run_daemon, seed_state
 from .nut_writer import NutWriter, build_variables
 
 log = structlog.get_logger(__name__)
@@ -50,11 +50,38 @@ async def _send(config: Config, packet) -> None:
         await client.disconnect()
 
 
-def _toggle(config: Config, builder, state: str) -> None:
-    enabled = state.lower() in ("on", "true", "1", "enable", "enabled")
-    packet = builder(enabled)
-    asyncio.run(_send(config, packet))
-    click.echo(f"sent: {'enable' if enabled else 'disable'} -> ok")
+def _send_via_socket(path: str, command: str) -> str | None:
+    """Ask a running daemon to run the command. None if no daemon is listening."""
+    sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    sock.settimeout(20)
+    try:
+        sock.connect(path)
+    except OSError:
+        return None  # no daemon -> caller falls back to a direct connection
+    try:
+        sock.sendall((command + "\n").encode())
+        return sock.recv(256).decode("utf-8", "replace").strip()
+    except OSError as exc:
+        return f"error: {exc}"
+    finally:
+        sock.close()
+
+
+def _toggle(config: Config, kind: str, state: str) -> None:
+    on = state.lower() in ("on", "true", "1", "enable", "enabled")
+    command = f"{kind} {'on' if on else 'off'}"
+    # Prefer the running daemon: it owns the single BLE connection, so this works
+    # live without stopping the bridge.
+    resp = _send_via_socket(config.control_socket_path, command)
+    if resp is not None:
+        click.echo(f"daemon: {resp}")
+        if resp.startswith("error"):
+            raise SystemExit(1)
+        return
+    # No daemon listening: connect directly (only works if nothing else holds BLE).
+    click.echo("no running daemon; connecting directly...")
+    asyncio.run(_send(config, OUTPUT_BUILDERS[kind](on)))
+    click.echo(f"sent (direct): {command}")
 
 
 @click.group()
@@ -113,25 +140,25 @@ def dc(ctx: click.Context) -> None:  # noqa: D401
     """Toggle 12V DC output."""
 
 
-def _register_toggle(group: click.Group, builder) -> None:
+def _register_toggle(group: click.Group, kind: str) -> None:
     @group.command("on")
     @click.pass_context
     def _on(ctx: click.Context) -> None:
         config = load_config(ctx.obj["config_path"])
         configure_logging(config.logging.level, config.logging.format)
-        _toggle(config, builder, "on")
+        _toggle(config, kind, "on")
 
     @group.command("off")
     @click.pass_context
     def _off(ctx: click.Context) -> None:
         config = load_config(ctx.obj["config_path"])
         configure_logging(config.logging.level, config.logging.format)
-        _toggle(config, builder, "off")
+        _toggle(config, kind, "off")
 
 
-_register_toggle(ac, delta3.set_ac_enabled_packet)
-_register_toggle(usb, delta3.set_usb_enabled_packet)
-_register_toggle(dc, delta3.set_dc_enabled_packet)
+_register_toggle(ac, "ac")
+_register_toggle(usb, "usb")
+_register_toggle(dc, "dc")
 
 
 @cli.command()

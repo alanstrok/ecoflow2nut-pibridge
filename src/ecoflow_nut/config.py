@@ -8,6 +8,8 @@ from typing import Any
 
 import yaml
 
+DEFAULT_CONTROL_SOCKET = "/var/run/nut/ecoflow-nut.sock"
+
 
 @dataclass(slots=True)
 class EcoflowConfig:
@@ -99,6 +101,10 @@ class Config:
     nut: NutConfig = field(default_factory=NutConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     auto_shutdown: AutoShutdownConfig = field(default_factory=AutoShutdownConfig)
+    # Local control socket: the running daemon listens here so the CLI can send
+    # output commands over the daemon's existing BLE connection (the device only
+    # allows one connection at a time).
+    control_socket_path: str = DEFAULT_CONTROL_SOCKET
 
 
 def _filter(cls: type, data: dict[str, Any]) -> dict[str, Any]:
@@ -139,4 +145,5 @@ def load_config(path: str | Path) -> Config:
         nut=nut,
         logging=logging_cfg,
         auto_shutdown=auto_shutdown,
+        control_socket_path=raw.get("control_socket_path", DEFAULT_CONTROL_SOCKET),
     )

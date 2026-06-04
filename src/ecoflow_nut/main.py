@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
 import sys
 import time
+from pathlib import Path
 
 import structlog
 
@@ -29,6 +31,29 @@ def seed_state() -> DeviceState:
     return DeviceState(
         soc_percent=100, ac_input_present=True, ac_input_watts=100, ac_output_watts=0
     )
+
+
+# Output command builders shared by the control socket and the auto-shutdown path.
+OUTPUT_BUILDERS = {
+    "ac": delta3.set_ac_enabled_packet,
+    "usb": delta3.set_usb_enabled_packet,
+    "dc": delta3.set_dc_enabled_packet,
+}
+
+
+def parse_control_command(line: str) -> tuple[str, bool]:
+    """Parse a control line like ``ac off`` into ``("ac", False)``.
+
+    Raises ValueError on anything that is not ``<ac|usb|dc> <on|off>``.
+    """
+    parts = line.strip().lower().split()
+    if (
+        len(parts) != 2
+        or parts[0] not in OUTPUT_BUILDERS
+        or parts[1] not in ("on", "off")
+    ):
+        raise ValueError("usage: <ac|usb|dc> <on|off>")
+    return parts[0], parts[1] == "on"
 
 
 def configure_logging(level: str, fmt: str) -> None:
@@ -71,6 +96,7 @@ class Daemon:
         # "online" so clients do not briefly see "on battery" at startup.
         self._writer.write(seed_state())
 
+        control = await self._start_control_server()
         watchdog = asyncio.create_task(self._watchdog())
         try:
             backoff = 1.0
@@ -108,7 +134,57 @@ class Daemon:
                 await self._sleep_or_stop(backoff)
         finally:
             watchdog.cancel()
+            if control is not None:
+                control.close()
+            self._remove_control_socket()
         return 0
+
+    # -- control socket ----------------------------------------------------- #
+    async def _start_control_server(self) -> asyncio.AbstractServer | None:
+        path = self._config.control_socket_path
+        try:
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            self._remove_control_socket()
+            server = await asyncio.start_unix_server(self._handle_control, path=path)
+            os.chmod(path, 0o660)
+            log.info("control.listening", socket=path)
+            return server
+        except Exception as exc:  # noqa: BLE001
+            log.warning("control.unavailable", socket=path, error=str(exc))
+            return None
+
+    def _remove_control_socket(self) -> None:
+        try:
+            os.unlink(self._config.control_socket_path)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            log.debug("control.unlink_failed", error=str(exc))
+
+    async def _handle_control(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        try:
+            raw = await asyncio.wait_for(reader.readline(), timeout=10)
+            response = await self._exec_control(raw.decode("utf-8", "replace"))
+        except Exception as exc:  # noqa: BLE001
+            response = f"error: {exc}"
+        try:
+            writer.write((response + "\n").encode())
+            await writer.drain()
+        except OSError:
+            pass
+        finally:
+            writer.close()
+
+    async def _exec_control(self, line: str) -> str:
+        kind, enabled = parse_control_command(line)  # raises ValueError -> error
+        client = self._active_client
+        if client is None or not client.is_connected:
+            return "error: not connected to device"
+        await client.send_command_packet(OUTPUT_BUILDERS[kind](enabled))
+        log.info("control.command", output=kind, enabled=enabled)
+        return f"ok: {kind} {'on' if enabled else 'off'}"
 
     async def _poll_loop(self, client: EcoFlowBLE) -> None:
         interval = self._config.ecoflow.poll_interval_seconds

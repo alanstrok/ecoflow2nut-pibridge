@@ -225,6 +225,22 @@ ecoflow-nut --config config.yaml usb on   # toggle USB output (also: usb off)
 ecoflow-nut --config config.yaml dc on    # toggle 12V DC out (also: dc off)
 ```
 
+The DELTA 3 allows only **one** BLE connection at a time, so the `ac`/`usb`/`dc`
+commands talk to the **running daemon** over a local control socket
+(`control_socket_path`) and it sends the command on its existing connection —
+no need to stop the bridge. If no daemon is running, the CLI falls back to
+connecting directly. So with the daemon up you can just run, in the same place
+the daemon runs:
+
+```bash
+# bare metal (Pi)
+sudo -u ecoflow /opt/ecoflow-nut-bridge/.venv/bin/ecoflow-nut \
+  --config /etc/ecoflow-nut/config.yaml ac off
+
+# docker
+docker exec ecoflow-nut-bridge ecoflow-nut --config /app/config/config.yaml ac off
+```
+
 ## 7. NUT client setup
 
 ### Unraid (built-in NUT client)

@@ -1,8 +1,10 @@
 """CLI tests that do not require BLE hardware."""
 
+import pytest
 from click.testing import CliRunner
 
 from ecoflow_nut.cli import cli
+from ecoflow_nut.main import OUTPUT_BUILDERS, parse_control_command
 
 
 def _write_config(tmp_path) -> str:
@@ -35,3 +37,26 @@ def test_help_lists_commands():
     assert result.exit_code == 0
     for cmd in ("read", "run", "seed", "ac", "usb", "dc"):
         assert cmd in result.output
+
+
+@pytest.mark.parametrize(
+    "line,expected",
+    [
+        ("ac off", ("ac", False)),
+        ("ac on", ("ac", True)),
+        ("USB OFF", ("usb", False)),
+        ("  dc   on  ", ("dc", True)),
+    ],
+)
+def test_parse_control_command_ok(line, expected):
+    assert parse_control_command(line) == expected
+
+
+@pytest.mark.parametrize("line", ["", "ac", "ac maybe", "fan on", "ac on off"])
+def test_parse_control_command_rejects(line):
+    with pytest.raises(ValueError):
+        parse_control_command(line)
+
+
+def test_output_builders_cover_all_kinds():
+    assert set(OUTPUT_BUILDERS) == {"ac", "usb", "dc"}
