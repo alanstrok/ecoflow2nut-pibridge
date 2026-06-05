@@ -17,6 +17,7 @@ from .autoshutdown import AutoShutdownController, ShutdownAction
 from .ble_client import EcoFlowBLE
 from .config import Config, load_config
 from .delta3 import DeviceState
+from .eve_outlet import EveOutlet
 from .nut_writer import NutWriter
 from .settings_store import SettingsStore
 
@@ -89,6 +90,10 @@ class Daemon:
         self._last_write_monotonic = time.monotonic()
         self._autoshutdown = AutoShutdownController(config.auto_shutdown)
         self._active_client: EcoFlowBLE | None = None
+        # Optional downstream HomeKit-over-BLE outlet (independent cut target).
+        self._eve: EveOutlet | None = (
+            EveOutlet(config.eve) if config.eve.enabled else None
+        )
         # Latest published telemetry, surfaced to the optional web UI / DB logger.
         self._latest_state: DeviceState | None = None
         self._latest_status: str = "OB"
@@ -440,14 +445,13 @@ class Daemon:
             names.append("usb")
         if cfg.cut_dc:
             names.append("dc")
+        if cfg.cut_eve and self._eve is not None:
+            names.append("eve")
         return names
 
     def _send_outputs(self, enabled: bool) -> None:
         cfg = self._config.auto_shutdown
         client = self._active_client
-        if client is None:
-            log.error("auto_shutdown.no_client", note="cannot send output command")
-            return
         packets = []
         if cfg.cut_ac:
             packets.append(delta3.set_ac_enabled_packet(enabled))
@@ -455,14 +459,24 @@ class Daemon:
             packets.append(delta3.set_usb_enabled_packet(enabled))
         if cfg.cut_dc:
             packets.append(delta3.set_dc_enabled_packet(enabled))
+        if packets and client is None:
+            log.error("auto_shutdown.no_client", note="cannot send EcoFlow command")
 
         async def _send() -> None:
-            for packet in packets:
+            if client is not None:
+                for packet in packets:
+                    try:
+                        await client.send_command_packet(packet)
+                    except Exception as exc:  # noqa: BLE001
+                        log.error("auto_shutdown.send_failed", error=str(exc))
+                    await asyncio.sleep(0.3)
+            # The HomeKit outlet is an independent cut target on its own radio,
+            # so drive it regardless of the EcoFlow link state.
+            if cfg.cut_eve and self._eve is not None:
                 try:
-                    await client.send_command_packet(packet)
+                    await self._eve.set(enabled)
                 except Exception as exc:  # noqa: BLE001
-                    log.error("auto_shutdown.send_failed", error=str(exc))
-                await asyncio.sleep(0.3)
+                    log.error("auto_shutdown.eve_failed", error=str(exc))
 
         asyncio.create_task(_send())
 

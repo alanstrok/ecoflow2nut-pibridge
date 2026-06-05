@@ -1,0 +1,197 @@
+"""Drive a HomeKit-over-BLE smart outlet (e.g. an Eve Energy, BLE/non-Thread).
+
+The DELTA 3's AC output is a single, all-or-nothing bank: the ``ConfigWrite``
+toggle cuts every AC socket at once. To shed *one* downstream load (say, an
+Unraid server) on critical battery while keeping the other sockets live (a
+router / fibre ONT), the bridge needs a switch *downstream* of the EcoFlow. A
+HomeKit-over-BLE outlet is exactly that switch.
+
+This module makes the bridge the outlet's HomeKit controller, speaking HAP over
+BLE via the optional :mod:`aiohomekit` dependency. A HAP accessory pairs with a
+single controller, so the outlet must be reset and removed from Apple Home
+first, then paired once with ``ecoflow-nut eve pair``.
+
+Design notes:
+
+* **aiohomekit is optional.** It is imported lazily so the bridge runs without
+  it unless the Eve integration is actually used.
+* **On-demand connections.** Each action starts a controller, connects, writes,
+  and stops again. The DELTA 3 link is a persistent, latency-sensitive BLE
+  session; touching the radio only briefly (and ideally on a *separate* adapter)
+  keeps it from stalling telemetry.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import structlog
+
+from .config import EveOutletConfig
+
+log = structlog.get_logger(__name__)
+
+# HomeKit "On" characteristic -- public.hap.characteristic.on. aiohomekit may
+# report the short ("25") or full UUID form depending on the accessory.
+_ON_SHORT = "25"
+_ON_FULL = "000000250000100080000026bb765291"
+
+
+class EveError(RuntimeError):
+    """Any failure talking to the HomeKit outlet (surfaced to the CLI/daemon)."""
+
+
+def _is_on_char(type_str: Any) -> bool:
+    """True if a characteristic ``type`` is the HomeKit On characteristic."""
+    t = str(type_str).lower().replace("-", "")
+    return t == _ON_SHORT or t == _ON_FULL
+
+
+def _build_controller(adapter: str) -> Any:
+    """Construct a BLE-only aiohomekit Controller bound to ``adapter``.
+
+    Imports are local so aiohomekit/bleak are only required when the Eve
+    integration is exercised.
+    """
+    try:
+        from aiohomekit.controller import Controller
+    except ImportError as exc:  # pragma: no cover - exercised via CLI/runtime
+        raise EveError(
+            "aiohomekit is not installed; install the optional extra with "
+            "'pip install ecoflow-nut-bridge[eve]'"
+        ) from exc
+    from bleak import BleakScanner
+
+    scanner = BleakScanner(adapter=adapter)
+    return Controller(bleak_scanner_instance=scanner)
+
+
+class EveOutlet:
+    """Turn a paired HomeKit-over-BLE outlet on or off on demand."""
+
+    def __init__(self, config: EveOutletConfig) -> None:
+        self._config = config
+        # Cache the resolved (aid, iid) of the On characteristic between calls so
+        # we do not re-walk the accessory database on every toggle.
+        self._on_aid_iid: tuple[int, int] | None = None
+
+    def _pairing_store(self) -> dict[str, Any]:
+        path = Path(self._config.pairing_file)
+        if not path.exists():
+            raise EveError(
+                f"no pairing data at {path}; run 'ecoflow-nut eve pair' first"
+            )
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError) as exc:
+            raise EveError(f"cannot read pairing data {path}: {exc}") from exc
+        if not isinstance(data, dict) or not data:
+            raise EveError(f"pairing data {path} is empty or malformed")
+        return data
+
+    def _select_pairing(self, store: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        """Pick the configured accessory from the persisted pairing store."""
+        alias = self._config.device_id or next(iter(store))
+        if alias not in store:
+            raise EveError(
+                f"device_id '{alias}' not found in pairing data; "
+                f"have {sorted(store)}"
+            )
+        return alias, store[alias]
+
+    async def _on_characteristic(self, pairing: Any) -> tuple[int, int]:
+        if self._on_aid_iid is not None:
+            return self._on_aid_iid
+        accessories = await pairing.list_accessories_and_characteristics()
+        for accessory in accessories:
+            aid = accessory["aid"]
+            for service in accessory.get("services", []):
+                for char in service.get("characteristics", []):
+                    if _is_on_char(char.get("type", "")):
+                        self._on_aid_iid = (aid, char["iid"])
+                        return self._on_aid_iid
+        raise EveError("no On characteristic found on the paired accessory")
+
+    async def set(self, on: bool) -> None:
+        """Connect, flip the outlet's On characteristic, and disconnect."""
+        alias, pairing_data = self._select_pairing(self._pairing_store())
+        controller = _build_controller(self._config.adapter)
+        await controller.async_start()
+        try:
+            pairing = controller.load_pairing(alias, pairing_data)
+            aid, iid = await self._on_characteristic(pairing)
+            result = await pairing.put_characteristics([(aid, iid, on)])
+            # put_characteristics returns a (possibly empty) mapping of failures
+            # keyed by (aid, iid); a non-empty result means the write was
+            # rejected.
+            if result:
+                raise EveError(f"outlet rejected the write: {result}")
+            log.info("eve.set", device_id=alias, on=on, aid=aid, iid=iid)
+        finally:
+            await controller.async_stop()
+
+    async def status(self) -> bool | None:
+        """Return the outlet's current On value, or None if unavailable."""
+        alias, pairing_data = self._select_pairing(self._pairing_store())
+        controller = _build_controller(self._config.adapter)
+        await controller.async_start()
+        try:
+            pairing = controller.load_pairing(alias, pairing_data)
+            aid, iid = await self._on_characteristic(pairing)
+            values = await pairing.get_characteristics([(aid, iid)])
+            entry = values.get((aid, iid), {})
+            value = entry.get("value")
+            return None if value is None else bool(value)
+        finally:
+            await controller.async_stop()
+
+
+async def discover(adapter: str, timeout: int = 10) -> list[dict[str, Any]]:
+    """Scan for HomeKit-over-BLE accessories and return brief descriptions."""
+    controller = _build_controller(adapter)
+    await controller.async_start()
+    found: list[dict[str, Any]] = []
+    try:
+        async for discovery in controller.async_discover(timeout):
+            desc = discovery.description
+            found.append(
+                {
+                    "device_id": getattr(desc, "id", None),
+                    "name": getattr(desc, "name", None),
+                    "category": getattr(desc, "category", None),
+                }
+            )
+    finally:
+        await controller.async_stop()
+    return found
+
+
+async def pair(config: EveOutletConfig) -> str:
+    """Pair with the configured accessory and persist its pairing data.
+
+    Requires ``device_id`` (from :func:`discover`) and ``setup_code`` (the
+    8-digit HomeKit code, e.g. ``123-45-678``). The outlet must not already be
+    paired to another controller (reset it / remove from Apple Home first).
+    """
+    if not config.device_id:
+        raise EveError("set eve.device_id (see 'ecoflow-nut eve discover') first")
+    if not config.setup_code:
+        raise EveError("set eve.setup_code (8-digit HomeKit code) to pair")
+
+    controller = _build_controller(config.adapter)
+    await controller.async_start()
+    try:
+        discovery = await controller.async_find(
+            config.device_id, timeout=config.connect_timeout_seconds
+        )
+        finish_pairing = await discovery.async_start_pairing(config.device_id)
+        pairing = await finish_pairing(config.setup_code)
+        path = Path(config.pairing_file)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({config.device_id: pairing.pairing_data}, indent=2))
+        log.info("eve.paired", device_id=config.device_id, pairing_file=str(path))
+        return config.device_id
+    finally:
+        await controller.async_stop()

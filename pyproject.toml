@@ -26,6 +26,8 @@ dependencies = [
 web = ["aiohttp>=3.9"]
 # Optional Postgres telemetry logging.
 postgres = ["asyncpg>=0.29"]
+# Drive a downstream HomeKit-over-BLE outlet (e.g. Eve Energy) as a cut target.
+eve = ["aiohomekit>=3.1"]
 # Convenience: both optional server features.
 server = ["aiohttp>=3.9", "asyncpg>=0.29"]
 dev = [

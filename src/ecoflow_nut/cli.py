@@ -10,6 +10,7 @@ import sys
 import click
 import structlog
 
+from . import eve_outlet
 from .ble_client import EcoFlowBLE
 from .config import Config, load_config
 from .delta3 import DeviceState
@@ -159,6 +160,83 @@ def _register_toggle(group: click.Group, kind: str) -> None:
 _register_toggle(ac, "ac")
 _register_toggle(usb, "usb")
 _register_toggle(dc, "dc")
+
+
+@cli.group()
+@click.pass_context
+def eve(ctx: click.Context) -> None:  # noqa: D401
+    """Control a downstream HomeKit-over-BLE outlet (e.g. Eve Energy).
+
+    Sheds a single load (e.g. an Unraid server) independently of the DELTA 3's
+    all-or-nothing AC bank. Requires the [eve] extra and a one-time pairing.
+    """
+
+
+@eve.command("discover")
+@click.option("--timeout", default=10, show_default=True, help="Scan seconds.")
+@click.pass_context
+def eve_discover(ctx: click.Context, timeout: int) -> None:
+    """Scan for HomeKit-over-BLE accessories (to find a device_id to pair)."""
+    config = load_config(ctx.obj["config_path"])
+    configure_logging(config.logging.level, config.logging.format)
+    found = asyncio.run(eve_outlet.discover(config.eve.adapter, timeout))
+    click.echo(json.dumps(found, indent=2))
+
+
+@eve.command("pair")
+@click.pass_context
+def eve_pair(ctx: click.Context) -> None:
+    """Pair with the configured outlet and persist its pairing data.
+
+    Set eve.device_id and eve.setup_code in the config first. The outlet must be
+    reset and removed from Apple Home (a HAP accessory pairs to one controller).
+    """
+    config = load_config(ctx.obj["config_path"])
+    configure_logging(config.logging.level, config.logging.format)
+    try:
+        device_id = asyncio.run(eve_outlet.pair(config.eve))
+    except eve_outlet.EveError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"paired {device_id} -> {config.eve.pairing_file}")
+
+
+def _eve_set(config: Config, on: bool) -> None:
+    try:
+        asyncio.run(eve_outlet.EveOutlet(config.eve).set(on))
+    except eve_outlet.EveError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"eve {'on' if on else 'off'}")
+
+
+@eve.command("on")
+@click.pass_context
+def eve_on(ctx: click.Context) -> None:
+    """Turn the outlet on."""
+    config = load_config(ctx.obj["config_path"])
+    configure_logging(config.logging.level, config.logging.format)
+    _eve_set(config, True)
+
+
+@eve.command("off")
+@click.pass_context
+def eve_off(ctx: click.Context) -> None:
+    """Turn the outlet off."""
+    config = load_config(ctx.obj["config_path"])
+    configure_logging(config.logging.level, config.logging.format)
+    _eve_set(config, False)
+
+
+@eve.command("status")
+@click.pass_context
+def eve_status(ctx: click.Context) -> None:
+    """Read the outlet's current on/off state."""
+    config = load_config(ctx.obj["config_path"])
+    configure_logging(config.logging.level, config.logging.format)
+    try:
+        value = asyncio.run(eve_outlet.EveOutlet(config.eve).status())
+    except eve_outlet.EveError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo("unknown" if value is None else ("on" if value else "off"))
 
 
 @cli.command()

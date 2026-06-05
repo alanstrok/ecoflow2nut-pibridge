@@ -181,8 +181,14 @@ Full annotated example: [`config/config.example.yaml`](config/config.example.yam
 | `auto_shutdown.grace_period_seconds` | `300` | Delay after arming (SoC trigger) before cutting |
 | `auto_shutdown.min_load_watts` | `null` | Low-load trigger: cut when AC output stays ≤ this (on battery, any SoC). `null` disables |
 | `auto_shutdown.load_grace_seconds` | `60` | Debounce for the low-load trigger |
-| `auto_shutdown.cut_ac` / `cut_usb` / `cut_dc` | `true`/`false`/`false` | Which outputs to cut |
+| `auto_shutdown.cut_ac` / `cut_usb` / `cut_dc` | `true`/`false`/`false` | Which DELTA 3 outputs to cut |
+| `auto_shutdown.cut_eve` | `false` | Also cut a downstream HomeKit-over-BLE outlet (see [Per-load shedding](#per-load-shedding-with-a-homekit-outlet)) |
 | `auto_shutdown.restore_on_recovery` | `false` | Re-enable cut outputs when power/SoC recovers |
+| `eve.enabled` | `false` | Master switch for the HomeKit-over-BLE outlet |
+| `eve.device_id` | `""` | HomeKit accessory id (from `eve discover`) |
+| `eve.adapter` | `hci1` | Bluetooth adapter for the outlet — ideally a **separate** dongle from the DELTA 3 |
+| `eve.pairing_file` | `/var/lib/ecoflow-nut/eve-pairing.json` | Where aiohomekit pairing data is persisted |
+| `eve.setup_code` | `""` | 8-digit HomeKit code (e.g. `123-45-678`), needed only to pair |
 
 ### Auto-shutdown
 
@@ -205,6 +211,78 @@ bridge host is powered from the DELTA 3's USB port.**
 This complements — does not replace — normal NUT behaviour: clients shut
 themselves down from `ups.status` (`OB LB`); auto-shutdown additionally protects
 the pack by cutting output after they've gone down.
+
+### Per-load shedding with a HomeKit outlet
+
+The DELTA 3's AC output is a **single, all-or-nothing bank** — `set_ac_enabled`
+switches every AC socket at once. To shed **one** load while keeping the others
+live, the bridge can drive a downstream **HomeKit-over-BLE smart outlet** (e.g. an
+Eve Energy, the BLE / non-Thread model) as an independent cut target. The bridge
+becomes the outlet's HomeKit controller (HAP over BLE via the optional
+[`aiohomekit`](https://pypi.org/project/aiohomekit/) extra) — no Apple hub
+involved.
+
+> Install the extra: `pip install ecoflow-nut-bridge[eve]`
+
+**Motivating example — keep the network up, shed the server.** Plug the router /
+fibre ONT straight into the DELTA 3's AC sockets, and plug an Unraid server into
+the Eve outlet (which is itself on a DELTA 3 socket). On a grid outage you want
+Unraid to shut down cleanly and then *fully drop* so the small network load runs
+on the remaining battery for as long as possible; when grid power returns, Unraid
+should power back up:
+
+```yaml
+auto_shutdown:
+  enabled: true
+  min_load_watts: 30           # set ABOVE network-only draw, BELOW network+idle-Unraid
+  load_grace_seconds: 60
+  cut_ac: false                # keep the DELTA 3 AC bank ON (router/fibre stay up)
+  cut_usb: false
+  cut_dc: false
+  cut_eve: true                # the only thing we cut is the Unraid outlet
+  restore_on_recovery: true    # turn Unraid back on when AC returns
+eve:
+  enabled: true
+  device_id: "AA:BB:CC:11:22:33"
+  adapter: "hci1"              # a SECOND BT dongle; keep hci0 for the DELTA 3
+```
+
+How it plays out, driven entirely by the existing **low-load trigger**:
+
+1. Grid fails → DELTA 3 switches to battery → NUT publishes `OB`, then `OB LB`
+   at the low-battery threshold → Unraid shuts itself down gracefully (NUT client).
+2. Once Unraid halts, total AC draw collapses below `min_load_watts`; after
+   `load_grace_seconds` the bridge turns the **Eve outlet off** — the router /
+   fibre keep running on the still-live AC bank, now stretching the battery much
+   further.
+3. Grid returns (battery charging again) → the recovery path turns the **Eve
+   outlet back on**. With the server's BIOS set to *"restore / power on after AC
+   loss"*, applying power reboots Unraid automatically.
+
+Pick `min_load_watts` so it sits between your network-only draw and your
+network-plus-idle-server draw (e.g. fibre+switch ≈ 15 W, +idle Unraid ≈ 75 W →
+`30` works). The threshold is what distinguishes "server still running" from
+"server has finished shutting down".
+
+One-time pairing (the outlet pairs with a single controller, so reset it and
+remove it from Apple Home first):
+
+```bash
+ecoflow-nut eve discover            # find the accessory's device_id
+# set eve.device_id + eve.setup_code in the config, then:
+ecoflow-nut eve pair                # persists pairing data to eve.pairing_file
+ecoflow-nut eve on / off / status   # manual control / verification
+```
+
+> **Bluetooth radios.** The DELTA 3 link is a persistent, latency-sensitive BLE
+> session. Give the outlet its **own** USB BT dongle (`eve.adapter: hci1`) so it
+> never contends with telemetry. The bridge connects to the outlet on demand
+> (connect → write → disconnect), so even on a shared adapter the EcoFlow link is
+> only briefly perturbed during an actual cut/restore.
+
+> **Recovery semantics.** `restore_on_recovery` fires when **AC input returns**
+> (grid back / charging). If you run fully off-grid on solar, SoC climbing while
+> still "on battery" disarms the trigger but does **not** restore the outlet.
 
 ### NUT variable mapping
 
