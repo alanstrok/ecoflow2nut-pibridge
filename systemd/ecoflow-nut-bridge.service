@@ -12,6 +12,10 @@ Type=simple
 User=ecoflow
 Group=nut
 WorkingDirectory=/opt/ecoflow-nut-bridge
+# Make Bluetooth reboot-safe: unblock rfkill and power on the adapter before we
+# scan. Some boots come up soft-blocked / unpowered. The leading "+" runs this
+# as root (the service itself runs as the unprivileged ecoflow user).
+ExecStartPre=+/bin/sh -c 'rfkill unblock bluetooth; sleep 1; bluetoothctl power on >/dev/null 2>&1 || true'
 # Seed an initial state file so the dummy-ups driver has something to read at
 # boot. Best-effort ("-"): a hiccup here must not stop the bridge itself.
 ExecStartPre=-/opt/ecoflow-nut-bridge/.venv/bin/ecoflow-nut --config /etc/ecoflow-nut/config.yaml seed
