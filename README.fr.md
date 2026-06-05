@@ -205,7 +205,8 @@ Exemple annoté complet : [`config/config.example.yaml`](config/config.example.y
 | `ups.status` | `OL` si secteur présent et puissance > `ac_input_present_min_watts` ; `OB LB` si SoC < seuil bas ; sinon `OB` |
 | `battery.charge` | `cms_batt_soc` (SoC %) |
 | `battery.runtime` | `(SoC/100 · capacité_wh · 0,9) / watts_sortie_AC · 3600`, ou `99999` au repos |
-| `ups.load` / `ups.realpower` | Watts de sortie AC (`pow_get_ac_out`, valeur absolue) |
+| `ups.realpower` | Watts de sortie AC (`pow_get_ac_out`, valeur absolue) |
+| `ups.load` | Sortie AC en pourcentage de `ups.realpower.nominal` |
 | `ups.realpower.nominal` | `1800` |
 | `input.*` / `output.*` | Valeurs de plaque statiques |
 
