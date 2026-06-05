@@ -276,6 +276,18 @@ _INDEX_HTML = """<!doctype html>
   .ctl { flex:1; min-width:140px; display:flex; align-items:center; justify-content:space-between;
          gap:.5rem; padding:.6rem .8rem; background:#1b1f2b; border-radius:10px; }
   .ctl .name { font-weight:600; }
+  .led { display:inline-block; width:11px; height:11px; border-radius:50%;
+         background:#3a4356; margin-right:.4rem; vertical-align:middle; flex:0 0 auto; }
+  .led.on { background:#3ad07a; box-shadow:0 0 7px #3ad07a99; }
+  .led.off { background:#6b7280; }
+  .led.warn { background:#f2c969; box-shadow:0 0 7px #f2c96999; animation:pulse 1.2s infinite; }
+  .led.crit { background:#f06363; box-shadow:0 0 9px #f06363bb; animation:pulse 1s infinite; }
+  .led.unknown { background:#3a4356; }
+  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.3; } }
+  .pstat { display:inline-flex; align-items:center; font-size:.78rem; color:#8a93a6;
+           min-width:78px; }
+  .pstat.on { color:#7ee2a8; } .pstat.off { color:#c6ccd6; }
+  .as-badge { display:inline-flex; align-items:center; font-weight:600; }
   button { font:inherit; border:0; border-radius:8px; padding:.45rem .85rem; cursor:pointer;
            background:#2a2f3c; color:#e6e6e6; font-weight:600; }
   button.on { background:#16432a; color:#7ee2a8; }
@@ -343,12 +355,15 @@ _INDEX_HTML = """<!doctype html>
     <h2>Port controls</h2>
     <div class="controls">
       <div class="ctl"><span class="name">AC output</span>
+        <span class="pstat" id="stAc"><span class="led unknown"></span>…</span>
         <span><button data-out="ac" data-on="1" class="on">On</button>
         <button data-out="ac" data-on="0" class="off">Off</button></span></div>
       <div class="ctl"><span class="name">USB</span>
+        <span class="pstat" id="stUsb"><span class="led unknown"></span>…</span>
         <span><button data-out="usb" data-on="1" class="on">On</button>
         <button data-out="usb" data-on="0" class="off">Off</button></span></div>
       <div class="ctl"><span class="name">12V DC</span>
+        <span class="pstat" id="stDc"><span class="led unknown"></span>…</span>
         <span><button data-out="dc" data-on="1" class="on">On</button>
         <button data-out="dc" data-on="0" class="off">Off</button></span></div>
     </div>
@@ -402,7 +417,8 @@ _INDEX_HTML = """<!doctype html>
   <section class="card">
     <h2>Auto-shutdown</h2>
     <div class="ctl">
-      <span><span class="name">Policy</span> <span id="asState" class="muted"></span></span>
+      <span class="as-badge"><span class="led unknown" id="asLed"></span>
+        <span id="asState">…</span></span>
       <span><button id="asOn" class="on">Enable</button>
       <button id="asOff" class="off">Disable</button></span>
     </div>
@@ -450,6 +466,28 @@ function fmtRuntime(s) {
 }
 function money(v) { return currency + (v ?? 0).toFixed(2); }
 
+function setPort(id, cls, text, title) {
+  const el = $("#" + id); if (!el) return;
+  el.className = "pstat " + (cls === "on" ? "on" : cls === "off" ? "off" : "");
+  el.innerHTML = `<span class="led ${cls}"></span>${text}`;
+  el.title = title || "";
+}
+function updatePorts(s) {
+  // AC has a real on/off flag (flow_info_ac_out); USB/DC do not, so USB is
+  // inferred from power draw and DC has no telemetry at all.
+  const ac = s.ac_output_on;
+  setPort("stAc", ac === true ? "on" : ac === false ? "off" : "unknown",
+    ac === true ? "ON" : ac === false ? "OFF" : "?",
+    ac == null ? "Awaiting the AC-output flag from the device." : "");
+  const usbW = Math.round((s.usb_output_watts ?? 0) + (s.usbc_output_watts ?? 0));
+  setPort("stUsb", usbW > 0 ? "on" : "unknown",
+    usbW > 0 ? "ON · " + usbW + "W" : "— idle/off",
+    usbW > 0 ? "" : "Inferred from power draw; the device reports no USB " +
+                    "enable flag, so 0 W means off OR on-but-idle.");
+  setPort("stDc", "unknown", "n/a",
+    "The DELTA 3 sends no 12V DC telemetry, so its on/off state is unknown.");
+}
+
 async function refreshState() {
   try {
     const r = await fetch("api/state", { headers: authHeaders() });
@@ -472,6 +510,7 @@ async function refreshState() {
     pill.textContent = s.status ?? "?";
     pill.className = "status-pill " +
       (s.status?.includes("LB") ? "status-LB" : s.status?.startsWith("OL") ? "status-OL" : "status-OB");
+    updatePorts(s);
     applyControlState();
     $("#historyCard").style.display = historyEnabled ? "" : "none";
     $("#energyCard").style.display = historyEnabled ? "" : "none";
@@ -522,12 +561,18 @@ async function refreshAuto() {
     const r = await fetch("api/autoshutdown", { headers: authHeaders() });
     if (!r.ok) return;
     const a = await r.json();
-    $("#asState").textContent = a.enabled
-      ? (a.triggered ? "ENABLED · cut sent" : a.armed ? "ENABLED · armed" : "ENABLED")
-      : "disabled";
+    let cls, txt;
+    if (!a.enabled) { cls = "off"; txt = "Disabled"; }
+    else if (a.triggered) { cls = "crit"; txt = "CUT sent"; }
+    else if (a.armed) {
+      cls = "warn";
+      txt = "ARMED" + (a.seconds_until_cut != null
+        ? ` · cutting in ${Math.round(a.seconds_until_cut)}s` : "");
+    } else { cls = "on"; txt = "Monitoring"; }
+    $("#asLed").className = "led " + cls;
+    $("#asState").textContent = txt;
     let d = `trigger ≤ ${a.trigger_soc_percent}%, recover ${a.recover_soc_percent}%, ` +
             `grace ${a.grace_period_seconds}s, cuts: ${(a.cut_outputs || []).join(", ") || "none"}`;
-    if (a.seconds_until_cut != null) d += ` · cutting in ${Math.round(a.seconds_until_cut)}s`;
     $("#asDetail").textContent = d;
   } catch (e) {}
 }

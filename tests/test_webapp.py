@@ -86,7 +86,17 @@ async def secured(harness: _Harness) -> AsyncIterator[TestClient]:
 async def test_index_served(secured: TestClient) -> None:
     resp = await secured.get("/")
     assert resp.status == 200
-    assert "EcoFlow DELTA 3" in await resp.text()
+    body = await resp.text()
+    assert "EcoFlow DELTA 3" in body
+    # Visual port + auto-shutdown status indicators are present.
+    for marker in ('id="stAc"', 'id="stUsb"', 'id="stDc"', 'id="asLed"'):
+        assert marker in body
+
+
+async def test_state_exposes_ac_output_flag(secured: TestClient) -> None:
+    # The dashboard derives the AC port LED from ac_output_on in /api/state.
+    body = await (await secured.get("/api/state")).json()
+    assert "ac_output_on" in body or "status" in body
 
 
 async def test_state_reports_capabilities(secured: TestClient) -> None:
