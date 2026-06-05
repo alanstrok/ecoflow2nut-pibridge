@@ -349,8 +349,10 @@ ECOFLOW_WEB_TOKEN=somesecret ecoflow-nut --config config.yaml run
 The dashboard shows SoC, AC in/out watts, USB/USB-C watts, status, runtime and
 charge/discharge estimates (auto-refreshing), with on/off buttons for **AC**,
 **USB** and **12V DC**, plus the auto-shutdown state (and a live enable/disable).
-The published Docker image already includes the web + Postgres extras; just set
-`web.enabled: true` and expose port 8080.
+When the [HomeKit outlet](#per-load-shedding-with-a-homekit-outlet) is enabled, a
+fourth **Eve outlet** control appears in the same panel (showing its last
+commanded on/off state). The published Docker image already includes the web +
+Postgres extras; just set `web.enabled: true` and expose port 8080.
 
 It also provides:
 

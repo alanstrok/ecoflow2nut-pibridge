@@ -94,6 +94,9 @@ class Daemon:
         self._eve: EveOutlet | None = (
             EveOutlet(config.eve) if config.eve.enabled else None
         )
+        # Last on/off state we commanded the Eve outlet into (the outlet is not
+        # polled to avoid extra BLE traffic; None == unknown until first command).
+        self._eve_state: bool | None = None
         # Latest published telemetry, surfaced to the optional web UI / DB logger.
         self._latest_state: DeviceState | None = None
         self._latest_status: str = "OB"
@@ -212,6 +215,7 @@ class Daemon:
                 update_settings=self._update_settings,
                 energy=self._web_energy,
                 history_enabled=self._store is not None,
+                eve_control=self.control_eve if self._eve is not None else None,
             )
             await web.start()
             self._web = web
@@ -235,9 +239,19 @@ class Daemon:
             if self._latest_update_monotonic
             else None
         )
+        eve = (
+            {"eve_enabled": True, "eve_on": self._eve_state}
+            if self._eve is not None
+            else {}
+        )
         if s is None:
-            return {"status": self._latest_status, "updated_seconds_ago": age}
+            return {
+                "status": self._latest_status,
+                "updated_seconds_ago": age,
+                **eve,
+            }
         return {
+            **eve,
             "soc_percent": s.soc_percent,
             "ac_input_watts": s.ac_input_watts,
             "ac_output_watts": s.ac_output_watts,
@@ -318,6 +332,15 @@ class Daemon:
         await client.send_command_packet(OUTPUT_BUILDERS[kind](enabled))
         log.info("control.command", output=kind, enabled=enabled)
         return f"{kind} {'on' if enabled else 'off'}"
+
+    async def control_eve(self, enabled: bool) -> str:
+        """Toggle the downstream HomeKit outlet. Raises on failure."""
+        if self._eve is None:
+            raise RuntimeError("eve outlet is not enabled")
+        await self._eve.set(enabled)
+        self._eve_state = enabled
+        log.info("control.eve", enabled=enabled)
+        return f"eve {'on' if enabled else 'off'}"
 
     def _record_sample(self, state: DeviceState, status: str, runtime: int) -> None:
         """Fire-and-forget a Postgres write (errors are swallowed in the store)."""
@@ -474,7 +497,7 @@ class Daemon:
             # so drive it regardless of the EcoFlow link state.
             if cfg.cut_eve and self._eve is not None:
                 try:
-                    await self._eve.set(enabled)
+                    await self.control_eve(enabled)
                 except Exception as exc:  # noqa: BLE001
                     log.error("auto_shutdown.eve_failed", error=str(exc))
 

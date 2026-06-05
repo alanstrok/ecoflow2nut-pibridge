@@ -32,6 +32,7 @@ log = structlog.get_logger(__name__)
 # Callback signatures the daemon wires up.
 StateProvider = Callable[[], dict[str, Any]]
 ControlFn = Callable[[str, bool], Awaitable[str]]
+EveControlFn = Callable[[bool], Awaitable[str]]
 HistoryFn = Callable[[int], Awaitable[list[dict[str, Any]]]]
 AutoStatusFn = Callable[[], dict[str, Any]]
 GetSettingsFn = Callable[[], dict[str, Any]]
@@ -56,10 +57,12 @@ class WebServer:
         update_settings: UpdateSettingsFn,
         energy: EnergyFn,
         history_enabled: bool = False,
+        eve_control: EveControlFn | None = None,
     ) -> None:
         self._config = config
         self._state_provider = state_provider
         self._control = control
+        self._eve_control = eve_control
         self._history = history
         self._autoshutdown_status = autoshutdown_status
         self._get_settings = get_settings
@@ -216,12 +219,20 @@ class WebServer:
         body = await _json_body(request)
         output = body.get("output")
         enabled = body.get("enabled")
-        if output not in _VALID_OUTPUTS or not isinstance(enabled, bool):
+        if not isinstance(enabled, bool) or (
+            output != "eve" and output not in _VALID_OUTPUTS
+        ):
             raise web.HTTPBadRequest(
-                reason='body must be {"output": "ac|usb|dc", "enabled": bool}'
+                reason='body must be {"output": "ac|usb|dc|eve", "enabled": bool}'
             )
+        if output == "eve" and self._eve_control is None:
+            raise web.HTTPBadRequest(reason="eve outlet control is not enabled")
         try:
-            message = await self._control(output, enabled)
+            if output == "eve":
+                assert self._eve_control is not None
+                message = await self._eve_control(enabled)
+            else:
+                message = await self._control(output, enabled)
         except Exception as exc:  # noqa: BLE001 - surface as a 4xx/5xx to the client
             raise web.HTTPConflict(reason=str(exc)) from exc
         log.info("web.control", output=output, enabled=enabled)
@@ -366,6 +377,11 @@ _INDEX_HTML = """<!doctype html>
         <span class="pstat" id="stDc"><span class="led unknown"></span>…</span>
         <span><button data-out="dc" data-on="1" class="on">On</button>
         <button data-out="dc" data-on="0" class="off">Off</button></span></div>
+      <div class="ctl" id="eveCtl" style="display:none">
+        <span class="name">Eve outlet <span class="muted" style="text-transform:none">(downstream)</span></span>
+        <span class="pstat" id="stEve"><span class="led unknown"></span>…</span>
+        <span><button data-out="eve" data-on="1" class="on">On</button>
+        <button data-out="eve" data-on="0" class="off">Off</button></span></div>
     </div>
     <div id="controlNote" class="muted" style="margin-top:.6rem"></div>
     <div class="token-row" id="tokenRow" style="display:none">
@@ -511,6 +527,14 @@ async function refreshState() {
     pill.className = "status-pill " +
       (s.status?.includes("LB") ? "status-LB" : s.status?.startsWith("OL") ? "status-OL" : "status-OB");
     updatePorts(s);
+    const eveOn = s.eve_on;
+    $("#eveCtl").style.display = s.eve_enabled === true ? "flex" : "none";
+    if (s.eve_enabled === true) {
+      setPort("stEve",
+        eveOn === true ? "on" : eveOn === false ? "off" : "unknown",
+        eveOn === true ? "ON" : eveOn === false ? "OFF" : "?",
+        eveOn == null ? "Unknown until first command." : "Last commanded state.");
+    }
     applyControlState();
     $("#historyCard").style.display = historyEnabled ? "" : "none";
     $("#energyCard").style.display = historyEnabled ? "" : "none";

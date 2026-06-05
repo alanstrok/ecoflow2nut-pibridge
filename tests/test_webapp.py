@@ -16,6 +16,7 @@ class _Harness:
 
     def __init__(self) -> None:
         self.control_calls: list[tuple[str, bool]] = []
+        self.eve_calls: list[bool] = []
         self.settings_updates: list[dict[str, object]] = []
         self.autoshutdown_enabled = False
         self.fail_control = False
@@ -29,6 +30,10 @@ class _Harness:
             raise RuntimeError("not connected to device")
         self.control_calls.append((kind, enabled))
         return f"{kind} {'on' if enabled else 'off'}"
+
+    async def eve_control(self, enabled: bool) -> str:
+        self.eve_calls.append(enabled)
+        return f"eve {'on' if enabled else 'off'}"
 
     async def history(self, minutes: int) -> list[dict[str, object]]:
         return [{"ts": "2026-06-05T00:00:00", "soc_percent": 50}]
@@ -53,7 +58,10 @@ class _Harness:
 
 
 async def _client(
-    config: WebConfig, harness: _Harness, history_enabled: bool = True
+    config: WebConfig,
+    harness: _Harness,
+    history_enabled: bool = True,
+    eve_enabled: bool = False,
 ) -> TestClient:
     server = WebServer(
         config,
@@ -65,6 +73,7 @@ async def _client(
         update_settings=harness.update_settings,
         energy=harness.energy,
         history_enabled=history_enabled,
+        eve_control=harness.eve_control if eve_enabled else None,
     )
     client = TestClient(TestServer(server.build_app()))
     await client.start_server()
@@ -128,6 +137,31 @@ async def test_control_rejects_bad_output(secured: TestClient) -> None:
     resp = await secured.post(
         "/api/control",
         json={"output": "laser", "enabled": True},
+        headers={"X-Auth-Token": "s3cret"},
+    )
+    assert resp.status == 400
+
+
+async def test_eve_control_routes_when_enabled(harness: _Harness) -> None:
+    client = await _client(WebConfig(auth_token="s3cret"), harness, eve_enabled=True)
+    try:
+        resp = await client.post(
+            "/api/control",
+            json={"output": "eve", "enabled": False},
+            headers={"X-Auth-Token": "s3cret"},
+        )
+        assert resp.status == 200
+        assert harness.eve_calls == [False]
+        assert harness.control_calls == []  # not routed to the EcoFlow path
+    finally:
+        await client.close()
+
+
+async def test_eve_control_rejected_when_disabled(secured: TestClient) -> None:
+    # The `secured` client is built without an eve_control callback.
+    resp = await secured.post(
+        "/api/control",
+        json={"output": "eve", "enabled": True},
         headers={"X-Auth-Token": "s3cret"},
     )
     assert resp.status == 400
