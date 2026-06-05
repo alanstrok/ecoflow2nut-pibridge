@@ -243,6 +243,147 @@ sudo -u ecoflow /opt/ecoflow-nut-bridge/.venv/bin/ecoflow-nut \
 docker exec ecoflow-nut-bridge ecoflow-nut --config /app/config/config.yaml ac off
 ```
 
+### Web UI & data logging
+
+An optional control dashboard runs **inside the daemon**, so it shares the single
+BLE connection — the page shows live telemetry and its toggles go out over the
+existing link (no second connection, no stopping the bridge). It is **disabled by
+default**.
+
+```yaml
+web:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8080
+  auth_token: ""            # required for control actions; prefer ECOFLOW_WEB_TOKEN
+  require_auth_for_read: false
+```
+
+Install the extra and start the bridge:
+
+```bash
+pip install "ecoflow-nut-bridge[web]"        # or [server] for web + postgres
+ECOFLOW_WEB_TOKEN=somesecret ecoflow-nut --config config.yaml run
+# open http://<bridge-host>:8080
+```
+
+The dashboard shows SoC, AC in/out watts, USB/USB-C watts, status, runtime and
+charge/discharge estimates (auto-refreshing), with on/off buttons for **AC**,
+**USB** and **12V DC**, plus the auto-shutdown state (and a live enable/disable).
+The published Docker image already includes the web + Postgres extras; just set
+`web.enabled: true` and expose port 8080.
+
+It also provides:
+
+* **Visual status indicators** — a coloured LED next to each control. The **AC**
+  output shows a true ON/OFF from the device's decoded flag (`flow_info_ac_out`).
+  **USB** is inferred from power draw (the device exposes no USB enable flag), so
+  it reads `ON · NW` when drawing and `— idle/off` otherwise — 0 W is ambiguous,
+  noted in its tooltip. **12V DC** shows `n/a` (the device sends no DC
+  telemetry). The **auto-shutdown** badge is grey *Disabled*, green *Monitoring*,
+  pulsing amber *ARMED · cutting in Ns*, or pulsing red *CUT sent*.
+* **Live settings editing** — a Settings panel edits "runtime-safe" config from
+  the browser: the full auto-shutdown policy (trigger/recover SoC %, grace
+  periods, min-load watts, which outputs to cut, restore-on-recovery), NUT
+  thresholds (low/warning %, runtime-low, AC-present watts, transfer points),
+  poll interval, battery capacity / nominal power, and the electricity pricing.
+  Changes apply **immediately** (no restart) and persist to `settings_file`
+  (`/var/lib/ecoflow-nut/settings.json`), which is overlaid back onto the YAML
+  at the next startup. Edits require the control token.
+* **USB-off guard** — turning the USB output off pops a confirmation, since the
+  bridge host (a Pi) is often powered from the DELTA 3's USB port.
+* **Hover detail** — the history chart shows the exact SoC / AC-in / AC-out
+  values (and local time) at the point under your cursor.
+* **Energy & cost** — when history logging is on, an Energy panel reports grid
+  energy (kWh), the **Heures Creuses / Heures Pleines** split and cost, average
+  and peak draw, and a projected €/day and €/month — so you can see what your
+  network stack and server cost to run. See [Pricing](#electricity-pricing).
+
+**Auth.** Control actions (port toggles, auto-shutdown) require `auth_token` —
+sent as an `X-Auth-Token` header, `Authorization: Bearer`, or `?token=`. The
+browser prompts for it and stores it locally. If no token is configured the
+controls are disabled and only the read-only dashboard is served; set
+`require_auth_for_read: true` to also gate telemetry. The token can cut power, so
+keep the UI on a trusted network.
+
+#### Telemetry history
+
+When a store is enabled the daemon writes one telemetry sample per poll and the
+dashboard's history charts read it back (down-sampled server-side). The bridge
+runs fine if the store is absent or down — logging failures are swallowed and
+never interrupt the NUT path. Both backends store the same columns (`ts, device,
+soc_percent, ac_input_watts, ac_output_watts, usb/usbc watts, input/output watts,
+runtime_seconds, status` + discharge/charge estimates), so you can query either
+directly for your own dashboards (Grafana, etc.). Pick **one** — if both are
+enabled, Postgres wins.
+
+**Option A — SQLite (local, self-contained, recommended for a Pi).** A single
+file on the bridge host, no server and **no extra Python dependency** (stdlib
+`sqlite3`). Just enable it:
+
+```yaml
+sqlite:
+  enabled: true
+  path: "/var/lib/ecoflow-nut/telemetry.db"   # persistent (NOT /var/run)
+  min_interval_seconds: 30
+  retention_days: 90
+```
+
+The systemd unit declares `StateDirectory=ecoflow-nut`, so
+`/var/lib/ecoflow-nut` is created owned by the service user automatically. WAL
+mode keeps SD-card wear low. Keep the file on local storage — SQLite over an
+NFS/SMB share is unreliable; use Postgres for a remote database.
+
+**Option B — Postgres (central/remote server).** For a shared database on
+another host. Requires the `[postgres]` extra:
+
+```yaml
+postgres:
+  enabled: true
+  dsn: ""                   # prefer the ECOFLOW_PG_DSN env var
+  min_interval_seconds: 0
+  retention_days: 0         # 0 = keep forever
+```
+
+```bash
+pip install "ecoflow-nut-bridge[postgres]"   # or [server] for web + postgres
+ECOFLOW_PG_DSN=postgresql://ecoflow:secret@db-host:5432/ecoflow \
+  ecoflow-nut --config config.yaml run
+```
+
+The table is created automatically on first connect (Postgres 14+; tested
+against **Postgres 17**). See [`docker-compose.example.yml`](docker-compose.example.yml)
+for a bridge + Postgres 17 stack.
+
+#### Electricity pricing
+
+With history logging enabled, the dashboard's Energy panel estimates running
+cost from a time-of-use tariff. Cost is metered against **AC input (grid draw)**
+— the energy actually pulled from the wall, including battery-charging losses.
+
+```yaml
+pricing:
+  enabled: true
+  currency: "€"
+  hc_start: "22:00"   # Heures Creuses (off-peak) window start — may wrap midnight
+  hc_end: "06:00"     # all other hours are Heures Pleines (peak)
+  price_hc: 0.18      # off-peak €/kWh
+  price_hp: 0.27      # peak €/kWh
+```
+
+Each logged sample is classified HC/HP by its **local** time-of-day, integrated
+to kWh, and priced. The panel shows the HC/HP split, total cost, average/peak
+draw and a projected €/day and €/month over the selected range. All of these
+values are also editable live from the web UI's Settings panel.
+
+> **What's stored vs derived.** Only the **power samples** are persisted (in the
+> telemetry store). The kWh and cost figures are **computed on the fly** from
+> those samples and your current prices — nothing monetary is written to the
+> database. A practical upshot: editing a price re-prices the *entire* history
+> retroactively. (Prices/HC hours live in `settings.json`, not the telemetry DB;
+> there is no per-day price history, so a mid-history tariff change re-prices all
+> past days at the new rate.)
+
 ## 7. NUT client setup
 
 ### Unraid (built-in NUT client)

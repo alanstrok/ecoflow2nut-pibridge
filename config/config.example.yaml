@@ -55,6 +55,58 @@ logging:
 # connection, without stopping the bridge. Must be writable by the service user.
 control_socket_path: "/var/run/nut/ecoflow-nut.sock"
 
+# Optional embedded web UI (control + telemetry dashboard). DISABLED by default.
+# Runs inside the daemon, so it shares the single BLE connection: the dashboard
+# shows live values and control actions go out over the existing link.
+# Requires the [web] extra:  pip install ecoflow-nut-bridge[web]
+web:
+  enabled: false
+  host: "0.0.0.0"            # bind address (0.0.0.0 = reachable on the LAN)
+  port: 8080
+  # Shared secret required for control actions (toggling outputs / auto-shutdown).
+  # Leave empty to keep the dashboard read-only. Prefer the ECOFLOW_WEB_TOKEN env
+  # var over putting the secret in this file.
+  auth_token: ""
+  require_auth_for_read: false   # also require the token to view telemetry
+
+# Telemetry history for the web UI's charts. Two backends, both DISABLED by
+# default; pick ONE (if both are on, Postgres wins).
+
+# Option A -- Local SQLite. 100% on this host, no server and no extra Python
+# dependency (stdlib sqlite3). Best when the bridge should be self-contained
+# (e.g. a Raspberry Pi). Just enable it; nothing else to install.
+sqlite:
+  enabled: false
+  path: "/var/lib/ecoflow-nut/telemetry.db"   # persistent file (NOT /var/run)
+  table: "ecoflow_samples"
+  min_interval_seconds: 30  # min seconds between persisted rows (0 = every frame)
+  retention_days: 90        # auto-prune rows older than this (0 = keep forever)
+
+# Option B -- Postgres. For a central/remote database server. Requires the
+# [postgres] extra: pip install ecoflow-nut-bridge[postgres]
+postgres:
+  enabled: false
+  # Connection string. Prefer the ECOFLOW_PG_DSN env var over this file.
+  dsn: ""                   # e.g. postgresql://ecoflow:secret@unraid-host:5432/ecoflow
+  table: "ecoflow_samples"
+  min_interval_seconds: 0   # min seconds between persisted rows (0 = every frame)
+  retention_days: 0         # auto-prune rows older than this (0 = keep forever)
+
+# Electricity pricing for the web UI's cost estimate. Heures Creuses (off-peak)
+# vs Heures Pleines (peak). Cost is metered against AC INPUT (grid draw). All of
+# these are also editable live from the web UI's Settings panel (and persisted).
+pricing:
+  enabled: false            # show cost figures in the dashboard
+  currency: "€"
+  hc_start: "22:00"         # off-peak window start (may wrap midnight)
+  hc_end: "06:00"           # off-peak window end; all other hours are HP
+  price_hc: 0.0             # off-peak price per kWh
+  price_hp: 0.0             # peak price per kWh
+
+# Where the web UI persists live-edited settings (overlaid on this file at
+# startup). Lives in the systemd StateDirectory so it survives restarts.
+settings_file: "/var/lib/ecoflow-nut/settings.json"
+
 # Optional auto-shutdown: cut the DELTA 3's output when the battery is critically
 # low while on battery. DISABLED by default -- cutting output is destructive.
 # The grace period lets NUT clients (Unraid/Synology) finish their own shutdown,

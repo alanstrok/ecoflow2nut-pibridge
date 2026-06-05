@@ -2,17 +2,46 @@
 #   * replace <owner> with the GHCR owner of the image
 #   * mount your own config.yaml
 #   * set your timezone
+#
+# To enable the web UI + Postgres history, in config.yaml set:
+#   web:      { enabled: true, port: 8080 }
+#   postgres: { enabled: true }
+# and provide the secrets via the environment block below (ECOFLOW_WEB_TOKEN /
+# ECOFLOW_PG_DSN). The dashboard is then served on http://<host>:8080.
 services:
   ecoflow-nut-bridge:
     image: ghcr.io/<owner>/ecoflow-nut-bridge:latest
     container_name: ecoflow-nut-bridge
     # host networking is required for BLE: the kernel only exposes the Bluetooth
     # adapter (hci0) in the host network namespace. It also publishes upsd on
-    # <host>:4141. The container runs its own bluetoothd (no host D-Bus mount).
+    # <host>:4141 and (when enabled) the web UI on <host>:8080. The container
+    # runs its own bluetoothd (no host D-Bus mount).
     network_mode: host
     privileged: true          # required for BLE / BlueZ access
     volumes:
       - ./config/config.yaml:/app/config/config.yaml:ro
     restart: unless-stopped
+    depends_on:
+      - postgres
     environment:
       - TZ=Etc/UTC
+      # Web UI control token + Postgres DSN (keep secrets out of config.yaml).
+      - ECOFLOW_WEB_TOKEN=change-me
+      - ECOFLOW_PG_DSN=postgresql://ecoflow:ecoflow@localhost:5432/ecoflow
+
+  # Optional: Postgres 17 for telemetry history. With host networking above the
+  # bridge reaches it at localhost:5432.
+  postgres:
+    image: postgres:17
+    container_name: ecoflow-postgres
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=ecoflow
+      - POSTGRES_PASSWORD=ecoflow
+      - POSTGRES_DB=ecoflow
+    volumes:
+      - ecoflow-pgdata:/var/lib/postgresql/data
+
+volumes:
+  ecoflow-pgdata:

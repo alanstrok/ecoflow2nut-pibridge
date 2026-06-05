@@ -24,6 +24,10 @@ Restart=always
 RestartSec=10
 StandardOutput=journal
 StandardError=journal
+# Persistent state dir for the optional local SQLite telemetry store. systemd
+# creates /var/lib/ecoflow-nut owned by the service user (the default
+# sqlite.path lives here). Harmless if SQLite logging is left disabled.
+StateDirectory=ecoflow-nut
 
 # Note: /run/nut is created and owned by the nut-server package (nut:nut, 0770);
 # the ecoflow user is added to the nut group so it can write the state file.

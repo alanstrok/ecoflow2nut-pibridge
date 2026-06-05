@@ -22,6 +22,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Embedded control/telemetry web UI.
+web = ["aiohttp>=3.9"]
+# Optional Postgres telemetry logging.
+postgres = ["asyncpg>=0.29"]
+# Convenience: both optional server features.
+server = ["aiohttp>=3.9", "asyncpg>=0.29"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
@@ -29,6 +35,8 @@ dev = [
     "black>=24.0",
     "mypy>=1.10",
     "types-PyYAML>=6.0",
+    "aiohttp>=3.9",
+    "asyncpg>=0.29",
 ]
 
 [project.scripts]
@@ -53,6 +61,11 @@ src = ["src", "tests"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "W"]
 ignore = ["B008"]  # click uses function calls in defaults
+
+[tool.ruff.lint.per-file-ignores]
+# webapp.py embeds a single-page HTML/CSS/JS dashboard as a string literal;
+# its lines are not Python and need not wrap at the code line length.
+"src/ecoflow_nut/webapp.py" = ["E501"]
 
 [tool.black]
 line-length = 90

@@ -42,7 +42,10 @@ mkdir -p "${APP_DIR}"
 cp -r "${REPO_DIR}/src" "${REPO_DIR}/pyproject.toml" "${REPO_DIR}/README.md" "${APP_DIR}/"
 python3 -m venv "${APP_DIR}/.venv"
 "${APP_DIR}/.venv/bin/pip" install --upgrade pip
-"${APP_DIR}/.venv/bin/pip" install "${APP_DIR}"
+# Install with the optional server extras (aiohttp web UI + asyncpg Postgres
+# logging). They are inert unless enabled in config.yaml, so this is safe even if
+# you never turn the web UI on.
+"${APP_DIR}/.venv/bin/pip" install "${APP_DIR}[server]"
 chown -R ecoflow:nut "${APP_DIR}"
 
 echo "==> Installing NUT configuration into ${NUT_CONF_DIR}..."
@@ -110,4 +113,11 @@ Next steps:
   3. Start bridge: sudo systemctl start ${SERVICE}
   4. Start NUT:    sudo systemctl restart nut-server
   5. Verify:       upsc ecoflow@localhost:4141
+
+Optional web UI (control dashboard):
+  - In ${CONF_DIR}/config.yaml set 'web.enabled: true' and an 'auth_token'
+    (or set ECOFLOW_WEB_TOKEN in a systemd drop-in), then restart the service.
+  - Open http://<pi-ip>:8080
+  - For Postgres history set 'postgres.enabled: true' and a 'dsn' (or
+    ECOFLOW_PG_DSN). The aiohttp/asyncpg deps are already installed above.
 EOF

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,10 @@ from typing import Any
 import yaml
 
 DEFAULT_CONTROL_SOCKET = "/var/run/nut/ecoflow-nut.sock"
+
+# Environment overrides for secrets, so they need not live in the YAML file.
+ENV_WEB_TOKEN = "ECOFLOW_WEB_TOKEN"
+ENV_PG_DSN = "ECOFLOW_PG_DSN"
 
 
 @dataclass(slots=True)
@@ -95,16 +100,98 @@ class AutoShutdownConfig:
 
 
 @dataclass(slots=True)
+class WebConfig:
+    """Embedded control/telemetry web UI served from inside the daemon.
+
+    Disabled by default. When enabled, an async HTTP server runs in the daemon's
+    event loop, so it shares the single BLE connection: the dashboard reads live
+    state and control actions go out over the existing link. Control actions
+    (toggling AC/USB/DC, changing auto-shutdown) require ``auth_token``; the
+    read-only dashboard is open unless ``require_auth_for_read`` is set.
+    """
+
+    enabled: bool = False
+    host: str = "0.0.0.0"  # noqa: S104 - intentionally LAN-reachable
+    port: int = 8080
+    # Shared secret for control actions. Prefer the ECOFLOW_WEB_TOKEN env var.
+    auth_token: str = ""
+    # Also require the token to view the dashboard / read telemetry.
+    require_auth_for_read: bool = False
+
+
+@dataclass(slots=True)
+class PostgresConfig:
+    """Optional Postgres telemetry logging.
+
+    Disabled by default. When enabled with a ``dsn`` (or the ECOFLOW_PG_DSN env
+    var), the daemon records one sample row per poll and the web UI's history
+    charts read from it. The bridge runs fine with no database.
+    """
+
+    enabled: bool = False
+    dsn: str = ""  # e.g. postgresql://user:pass@host:5432/ecoflow
+    table: str = "ecoflow_samples"
+    # Minimum seconds between persisted samples (decouples DB write rate from the
+    # BLE poll interval). 0 logs every complete frame.
+    min_interval_seconds: int = 0
+    retention_days: int = 0  # 0 disables automatic pruning of old rows
+
+
+@dataclass(slots=True)
+class SqliteConfig:
+    """Optional local SQLite telemetry logging.
+
+    Disabled by default. A 100%-local, zero-extra-dependency store (Python stdlib
+    ``sqlite3``): the daemon records one sample row per poll into a single file on
+    the bridge host and the web UI's history charts read from it. Ideal when the
+    bridge should be self-contained with no separate database server. The bridge
+    runs fine if the file can't be written. If both ``postgres`` and ``sqlite``
+    are enabled, Postgres takes precedence.
+    """
+
+    enabled: bool = False
+    path: str = "/var/lib/ecoflow-nut/telemetry.db"
+    table: str = "ecoflow_samples"
+    min_interval_seconds: int = 0
+    retention_days: int = 0  # 0 disables automatic pruning of old rows
+
+
+@dataclass(slots=True)
+class PricingConfig:
+    """Time-of-use electricity pricing for the web UI's cost estimate.
+
+    French "Heures Creuses / Heures Pleines" (off-peak / peak) tariff. Cost is
+    metered against AC *input* (grid draw). The HC window is a single span that
+    may wrap midnight (default 22:00 -> 06:00); all other hours are HP. Prices
+    are per kWh in ``currency``. These are editable live from the web UI.
+    """
+
+    enabled: bool = False
+    currency: str = "€"
+    hc_start: str = "22:00"
+    hc_end: str = "06:00"
+    price_hc: float = 0.0
+    price_hp: float = 0.0
+
+
+@dataclass(slots=True)
 class Config:
     ecoflow: EcoflowConfig
     ble: BleConfig = field(default_factory=BleConfig)
     nut: NutConfig = field(default_factory=NutConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     auto_shutdown: AutoShutdownConfig = field(default_factory=AutoShutdownConfig)
+    web: WebConfig = field(default_factory=WebConfig)
+    postgres: PostgresConfig = field(default_factory=PostgresConfig)
+    sqlite: SqliteConfig = field(default_factory=SqliteConfig)
+    pricing: PricingConfig = field(default_factory=PricingConfig)
     # Local control socket: the running daemon listens here so the CLI can send
     # output commands over the daemon's existing BLE connection (the device only
     # allows one connection at a time).
     control_socket_path: str = DEFAULT_CONTROL_SOCKET
+    # Where the web UI persists live-edited settings (overlaid on the YAML at
+    # startup). Lives in the systemd StateDirectory so it survives restarts.
+    settings_file: str = "/var/lib/ecoflow-nut/settings.json"
 
 
 def _filter(cls: type, data: dict[str, Any]) -> dict[str, Any]:
@@ -139,11 +226,26 @@ def load_config(path: str | Path) -> Config:
         **_filter(AutoShutdownConfig, raw.get("auto_shutdown", {}))
     )
 
+    web = WebConfig(**_filter(WebConfig, raw.get("web", {})))
+    # Secrets may be supplied via the environment instead of the YAML file.
+    web.auth_token = os.environ.get(ENV_WEB_TOKEN, web.auth_token)
+
+    postgres = PostgresConfig(**_filter(PostgresConfig, raw.get("postgres", {})))
+    postgres.dsn = os.environ.get(ENV_PG_DSN, postgres.dsn)
+
+    sqlite = SqliteConfig(**_filter(SqliteConfig, raw.get("sqlite", {})))
+    pricing = PricingConfig(**_filter(PricingConfig, raw.get("pricing", {})))
+
     return Config(
         ecoflow=ecoflow,
         ble=ble,
         nut=nut,
         logging=logging_cfg,
         auto_shutdown=auto_shutdown,
+        web=web,
+        postgres=postgres,
+        sqlite=sqlite,
+        pricing=pricing,
         control_socket_path=raw.get("control_socket_path", DEFAULT_CONTROL_SOCKET),
+        settings_file=raw.get("settings_file", "/var/lib/ecoflow-nut/settings.json"),
     )

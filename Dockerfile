@@ -18,7 +18,8 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 COPY pyproject.toml README.md ./
 COPY src ./src
-RUN pip install .
+# Include the optional web UI + Postgres logging extras in the image.
+RUN pip install '.[server]'
 
 # ---- runtime ------------------------------------------------------------- #
 FROM python:3.12-slim AS runtime
@@ -48,7 +49,8 @@ COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
 WORKDIR /app
-EXPOSE 4141
+# 4141 = NUT (upsd); 8080 = optional embedded web UI (when web.enabled).
+EXPOSE 4141 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
     CMD upsc ecoflow@localhost:4141 >/dev/null 2>&1 || exit 1
