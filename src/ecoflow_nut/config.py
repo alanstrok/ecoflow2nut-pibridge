@@ -138,6 +138,25 @@ class PostgresConfig:
 
 
 @dataclass(slots=True)
+class SqliteConfig:
+    """Optional local SQLite telemetry logging.
+
+    Disabled by default. A 100%-local, zero-extra-dependency store (Python stdlib
+    ``sqlite3``): the daemon records one sample row per poll into a single file on
+    the bridge host and the web UI's history charts read from it. Ideal when the
+    bridge should be self-contained with no separate database server. The bridge
+    runs fine if the file can't be written. If both ``postgres`` and ``sqlite``
+    are enabled, Postgres takes precedence.
+    """
+
+    enabled: bool = False
+    path: str = "/var/lib/ecoflow-nut/telemetry.db"
+    table: str = "ecoflow_samples"
+    min_interval_seconds: int = 0
+    retention_days: int = 0  # 0 disables automatic pruning of old rows
+
+
+@dataclass(slots=True)
 class Config:
     ecoflow: EcoflowConfig
     ble: BleConfig = field(default_factory=BleConfig)
@@ -146,6 +165,7 @@ class Config:
     auto_shutdown: AutoShutdownConfig = field(default_factory=AutoShutdownConfig)
     web: WebConfig = field(default_factory=WebConfig)
     postgres: PostgresConfig = field(default_factory=PostgresConfig)
+    sqlite: SqliteConfig = field(default_factory=SqliteConfig)
     # Local control socket: the running daemon listens here so the CLI can send
     # output commands over the daemon's existing BLE connection (the device only
     # allows one connection at a time).
@@ -191,6 +211,8 @@ def load_config(path: str | Path) -> Config:
     postgres = PostgresConfig(**_filter(PostgresConfig, raw.get("postgres", {})))
     postgres.dsn = os.environ.get(ENV_PG_DSN, postgres.dsn)
 
+    sqlite = SqliteConfig(**_filter(SqliteConfig, raw.get("sqlite", {})))
+
     return Config(
         ecoflow=ecoflow,
         ble=ble,
@@ -199,5 +221,6 @@ def load_config(path: str | Path) -> Config:
         auto_shutdown=auto_shutdown,
         web=web,
         postgres=postgres,
+        sqlite=sqlite,
         control_socket_path=raw.get("control_socket_path", DEFAULT_CONTROL_SOCKET),
     )

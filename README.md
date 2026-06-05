@@ -280,33 +280,53 @@ controls are disabled and only the read-only dashboard is served; set
 `require_auth_for_read: true` to also gate telemetry. The token can cut power, so
 keep the UI on a trusted network.
 
-#### Postgres history
+#### Telemetry history
 
-With `postgres.enabled` and a DSN, the daemon writes one telemetry sample per
-poll and the dashboard's history charts read it back (down-sampled server-side).
-The bridge runs fine if the database is absent or down — logging failures are
-swallowed and never interrupt the NUT path.
+When a store is enabled the daemon writes one telemetry sample per poll and the
+dashboard's history charts read it back (down-sampled server-side). The bridge
+runs fine if the store is absent or down — logging failures are swallowed and
+never interrupt the NUT path. Both backends store the same columns (`ts, device,
+soc_percent, ac_input_watts, ac_output_watts, usb/usbc watts, input/output watts,
+runtime_seconds, status` + discharge/charge estimates), so you can query either
+directly for your own dashboards (Grafana, etc.). Pick **one** — if both are
+enabled, Postgres wins.
+
+**Option A — SQLite (local, self-contained, recommended for a Pi).** A single
+file on the bridge host, no server and **no extra Python dependency** (stdlib
+`sqlite3`). Just enable it:
+
+```yaml
+sqlite:
+  enabled: true
+  path: "/var/lib/ecoflow-nut/telemetry.db"   # persistent (NOT /var/run)
+  min_interval_seconds: 30
+  retention_days: 90
+```
+
+The systemd unit declares `StateDirectory=ecoflow-nut`, so
+`/var/lib/ecoflow-nut` is created owned by the service user automatically. WAL
+mode keeps SD-card wear low. Keep the file on local storage — SQLite over an
+NFS/SMB share is unreliable; use Postgres for a remote database.
+
+**Option B — Postgres (central/remote server).** For a shared database on
+another host. Requires the `[postgres]` extra:
 
 ```yaml
 postgres:
   enabled: true
   dsn: ""                   # prefer the ECOFLOW_PG_DSN env var
-  table: "ecoflow_samples"
-  min_interval_seconds: 0   # throttle writes (0 = every frame)
+  min_interval_seconds: 0
   retention_days: 0         # 0 = keep forever
 ```
 
 ```bash
 pip install "ecoflow-nut-bridge[postgres]"   # or [server] for web + postgres
-ECOFLOW_PG_DSN=postgresql://ecoflow:secret@localhost:5432/ecoflow \
+ECOFLOW_PG_DSN=postgresql://ecoflow:secret@db-host:5432/ecoflow \
   ecoflow-nut --config config.yaml run
 ```
 
 The table is created automatically on first connect (Postgres 14+; tested
-against **Postgres 17**). It stores `ts, device, soc_percent, ac_input_watts,
-ac_output_watts, usb/usbc watts, input/output watts, runtime_seconds, status`
-and the discharge/charge estimates — query it directly for your own dashboards
-(Grafana, etc.). See [`docker-compose.example.yml`](docker-compose.example.yml)
+against **Postgres 17**). See [`docker-compose.example.yml`](docker-compose.example.yml)
 for a bridge + Postgres 17 stack.
 
 ## 7. NUT client setup

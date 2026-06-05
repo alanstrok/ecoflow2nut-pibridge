@@ -152,18 +152,28 @@ class Daemon:
             await self._stop_store()
         return 0
 
-    # -- optional subsystems: web UI + Postgres ----------------------------- #
+    # -- optional subsystems: web UI + telemetry store ---------------------- #
     async def _start_store(self) -> None:
-        if not self._config.postgres.enabled:
-            return
-        if not self._config.postgres.dsn:
-            log.warning("db.disabled", reason="postgres.enabled but no dsn configured")
-            return
+        """Bring up the telemetry store. Postgres wins if both are enabled."""
+        pg = self._config.postgres
+        lite = self._config.sqlite
         try:
-            from .db import TelemetryStore
+            if pg.enabled:
+                if not pg.dsn:
+                    log.warning("db.disabled", reason="postgres.enabled but no dsn")
+                    return
+                if lite.enabled:
+                    log.warning("db.both_enabled", note="using postgres, ignoring sqlite")
+                from .db import TelemetryStore
 
-            store = TelemetryStore(self._config.postgres)
-            await store.connect()
+                store: object = TelemetryStore(pg)
+            elif lite.enabled:
+                from .db_sqlite import SqliteTelemetryStore
+
+                store = SqliteTelemetryStore(lite)
+            else:
+                return
+            await store.connect()  # type: ignore[attr-defined]
             self._store = store
         except Exception as exc:  # noqa: BLE001 - DB must not prevent the bridge
             log.error("db.start_failed", error=str(exc), error_type=type(exc).__name__)

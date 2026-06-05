@@ -52,6 +52,23 @@ postgres:
     assert config.postgres.retention_days == 7
 
 
+def test_parses_sqlite_section(tmp_path: Path) -> None:
+    extra = """
+sqlite:
+  enabled: true
+  path: "/data/eco.db"
+  min_interval_seconds: 30
+  retention_days: 90
+"""
+    config = load_config(_write(tmp_path, extra))
+    assert config.sqlite.enabled is True
+    assert config.sqlite.path == "/data/eco.db"
+    assert config.sqlite.min_interval_seconds == 30
+    assert config.sqlite.retention_days == 90
+    # Postgres stays disabled / independent.
+    assert config.postgres.enabled is False
+
+
 def test_env_overrides_secrets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     extra = """
 web:

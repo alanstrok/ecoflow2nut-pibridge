@@ -69,13 +69,25 @@ web:
   auth_token: ""
   require_auth_for_read: false   # also require the token to view telemetry
 
-# Optional Postgres telemetry logging. DISABLED by default. When enabled with a
-# dsn, the daemon records one sample row per poll and the web UI's history charts
-# read from it. Requires the [postgres] extra: pip install ecoflow-nut-bridge[postgres]
+# Telemetry history for the web UI's charts. Two backends, both DISABLED by
+# default; pick ONE (if both are on, Postgres wins).
+
+# Option A -- Local SQLite. 100% on this host, no server and no extra Python
+# dependency (stdlib sqlite3). Best when the bridge should be self-contained
+# (e.g. a Raspberry Pi). Just enable it; nothing else to install.
+sqlite:
+  enabled: false
+  path: "/var/lib/ecoflow-nut/telemetry.db"   # persistent file (NOT /var/run)
+  table: "ecoflow_samples"
+  min_interval_seconds: 30  # min seconds between persisted rows (0 = every frame)
+  retention_days: 90        # auto-prune rows older than this (0 = keep forever)
+
+# Option B -- Postgres. For a central/remote database server. Requires the
+# [postgres] extra: pip install ecoflow-nut-bridge[postgres]
 postgres:
   enabled: false
   # Connection string. Prefer the ECOFLOW_PG_DSN env var over this file.
-  dsn: ""                   # e.g. postgresql://ecoflow:secret@localhost:5432/ecoflow
+  dsn: ""                   # e.g. postgresql://ecoflow:secret@unraid-host:5432/ecoflow
   table: "ecoflow_samples"
   min_interval_seconds: 0   # min seconds between persisted rows (0 = every frame)
   retention_days: 0         # auto-prune rows older than this (0 = keep forever)
