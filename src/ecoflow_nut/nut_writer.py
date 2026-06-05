@@ -63,6 +63,14 @@ def build_variables(state: DeviceState, nut: NutConfig) -> dict[str, str]:
     status = derive_status(state, nut)
     runtime = estimate_runtime_seconds(state, nut)
     load_watts = int(state.ac_output_watts or 0)
+    # NUT defines ups.load as load percent of capacity, not watts. Derive it
+    # from the AC output against the nominal real power; ups.realpower carries
+    # the actual watts.
+    load_percent = (
+        int(round(load_watts / nut.realpower_nominal * 100))
+        if nut.realpower_nominal
+        else 0
+    )
 
     variables: dict[str, str] = {
         "device.mfr": static.manufacturer,
@@ -73,7 +81,7 @@ def build_variables(state: DeviceState, nut: NutConfig) -> dict[str, str]:
         "ups.model": static.model,
         "ups.serial": static.serial,
         "ups.status": status,
-        "ups.load": str(load_watts),
+        "ups.load": str(load_percent),
         "ups.realpower": str(load_watts),
         "ups.realpower.nominal": str(nut.realpower_nominal),
         "battery.charge": str(int(state.soc_percent or 0)),

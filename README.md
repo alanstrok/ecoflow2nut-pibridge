@@ -213,7 +213,8 @@ the pack by cutting output after they've gone down.
 | `ups.status` | `OL` if AC present and drawing > `ac_input_present_min_watts`; `OB LB` if SoC < low threshold; else `OB` |
 | `battery.charge` | `cms_batt_soc` (SoC %) |
 | `battery.runtime` | `(SoC/100 · capacity_wh · 0.9) / ac_output_watts · 3600`, or `99999` when idle |
-| `ups.load` / `ups.realpower` | AC output watts (`pow_get_ac_out`, abs) |
+| `ups.realpower` | AC output watts (`pow_get_ac_out`, abs) |
+| `ups.load` | AC output as a percent of `ups.realpower.nominal` |
 | `ups.realpower.nominal` | `1800` |
 | `input.*` / `output.*` | static nameplate values |
 

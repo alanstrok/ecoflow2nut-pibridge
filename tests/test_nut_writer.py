@@ -74,7 +74,9 @@ def test_build_variables_has_required_fields(nut):
     variables = build_variables(state, nut)
     assert variables["ups.status"] == "OL"
     assert variables["battery.charge"] == "75"
-    assert variables["ups.load"] == "250"
+    # ups.load is a percent of nominal (250 W of 1800 W ≈ 14%); watts live in
+    # ups.realpower.
+    assert variables["ups.load"] == "14"
     assert variables["ups.realpower"] == "250"
     assert variables["ups.realpower.nominal"] == "1800"
     assert variables["device.serial"] == "P231XXXXXXXXXXXX"
