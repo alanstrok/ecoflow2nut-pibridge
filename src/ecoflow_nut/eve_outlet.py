@@ -75,7 +75,11 @@ def _make_scanner(adapter: str) -> Any:
 
         def _dispatch(self, device: Any, advertisement_data: Any) -> None:
             if self._ahk_callback is not None:
-                self._ahk_callback(device, advertisement_data)
+                # aiohomekit's per-advert bookkeeping can raise (e.g. before a
+                # pairing's accessory DB is populated); swallow so it never spams
+                # the bleak/dbus message handler or aborts a scan.
+                with contextlib.suppress(Exception):
+                    self._ahk_callback(device, advertisement_data)
 
         def register_detection_callback(self, callback: Any) -> None:
             self._ahk_callback = callback
@@ -166,7 +170,21 @@ async def _connected_controller(adapter: str, device_id: str, timeout: int) -> A
     controller = _build_controller(adapter)
     await controller.async_start()
     try:
-        _ble_transport(controller)._device_detected(device, _adv)
+        transport = _ble_transport(controller)
+        transport._device_detected(device, _adv)
+        # aiohomekit's live scan keeps running after async_start. Left on, it (a)
+        # invokes per-advert bookkeeping on the loaded pairing before its
+        # accessory DB exists -- which raises repeatedly -- and (b) scanning while
+        # connecting on a single radio drives BlueZ into "Client is already
+        # connected" failures. We've already fed aiohomekit the device (and seeded
+        # its discovery cache), so silence and stop the scan before connecting;
+        # establish_connection works from the BLEDevice without an active scan.
+        scanner = getattr(transport, "_scanner", None)
+        if scanner is not None:
+            with contextlib.suppress(Exception):
+                scanner.register_detection_callback(None)
+            with contextlib.suppress(Exception):
+                await scanner.stop()
     except Exception:
         await controller.async_stop()
         raise
