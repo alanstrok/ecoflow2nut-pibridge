@@ -44,6 +44,12 @@ class EveError(RuntimeError):
     """Any failure talking to the HomeKit outlet (surfaced to the CLI/daemon)."""
 
 
+def _norm_id(device_id: str) -> str:
+    """Normalise a HomeKit device id. aiohomekit keys discoveries by the
+    lowercase ``xx:xx:..`` form, so a config value in any case still matches."""
+    return device_id.strip().lower()
+
+
 def _is_on_char(type_str: Any) -> bool:
     """True if a characteristic ``type`` is the HomeKit On characteristic."""
     t = str(type_str).lower().replace("-", "")
@@ -128,7 +134,9 @@ class EveOutlet:
 
     def _select_pairing(self, store: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         """Pick the configured accessory from the persisted pairing store."""
-        alias = self._config.device_id or next(iter(store))
+        alias = _norm_id(self._config.device_id) if self._config.device_id else next(
+            iter(store)
+        )
         if alias not in store:
             raise EveError(
                 f"device_id '{alias}' not found in pairing data; "
@@ -222,7 +230,7 @@ def parse_homekit_advert(apple_mfr_data: bytes) -> dict[str, Any] | None:
     device_id = ":".join(f"{b:02X}" for b in apple_mfr_data[3:9])
     category = int.from_bytes(apple_mfr_data[9:11], "little")
     return {
-        "device_id": device_id,
+        "device_id": device_id.lower(),
         "category": category,
         "category_name": _HK_CATEGORIES.get(category, f"#{category}"),
         "status_flags": status,
@@ -274,18 +282,19 @@ async def pair(config: EveOutletConfig) -> str:
     if not config.setup_code:
         raise EveError("set eve.setup_code (8-digit HomeKit code) to pair")
 
+    device_id = _norm_id(config.device_id)
     controller = _build_controller(config.adapter)
     await controller.async_start()
     try:
         discovery = await controller.async_find(
-            config.device_id, timeout=config.connect_timeout_seconds
+            device_id, timeout=config.connect_timeout_seconds
         )
-        finish_pairing = await discovery.async_start_pairing(config.device_id)
+        finish_pairing = await discovery.async_start_pairing(device_id)
         pairing = await finish_pairing(config.setup_code)
         path = Path(config.pairing_file)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({config.device_id: pairing.pairing_data}, indent=2))
-        log.info("eve.paired", device_id=config.device_id, pairing_file=str(path))
-        return config.device_id
+        path.write_text(json.dumps({device_id: pairing.pairing_data}, indent=2))
+        log.info("eve.paired", device_id=device_id, pairing_file=str(path))
+        return device_id
     finally:
         await controller.async_stop()

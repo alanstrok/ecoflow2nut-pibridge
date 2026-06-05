@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ecoflow-nut-bridge"
-version = "0.1.3"
+version = "0.1.4"
 description = "Expose an EcoFlow DELTA 3 portable power station as a standard NUT UPS over BLE."
 readme = "README.md"
 license = { text = "MIT" }

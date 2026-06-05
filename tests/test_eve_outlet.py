@@ -127,9 +127,9 @@ def _outlet_accessories() -> list[dict]:
 @pytest.fixture()
 def paired(tmp_path: Path) -> EveOutletConfig:
     pairing_file = tmp_path / "eve.json"
-    pairing_file.write_text(json.dumps({"DEV1": {"AccessoryAddress": "x"}}))
+    pairing_file.write_text(json.dumps({"dev1": {"AccessoryAddress": "x"}}))
     return EveOutletConfig(
-        enabled=True, device_id="DEV1", pairing_file=str(pairing_file)
+        enabled=True, device_id="dev1", pairing_file=str(pairing_file)
     )
 
 
@@ -143,8 +143,26 @@ def test_set_writes_on_characteristic(monkeypatch, paired: EveOutletConfig) -> N
     asyncio.run(EveOutlet(paired).set(True))
 
     assert pairing.written == [(1, 9, True)]
-    assert controller.loaded == ("DEV1", {"AccessoryAddress": "x"})
+    assert controller.loaded == ("dev1", {"AccessoryAddress": "x"})
     assert controller.started and controller.stopped
+
+
+def test_select_pairing_is_case_insensitive(monkeypatch, tmp_path: Path) -> None:
+    # aiohomekit keys discoveries/pairings by the lowercase device id; a config
+    # value in upper-case must still resolve.
+    pairing_file = tmp_path / "eve.json"
+    pairing_file.write_text(json.dumps({"6e:e0:a7:97:ea:d2": {"x": 1}}))
+    cfg = EveOutletConfig(
+        enabled=True, device_id="6E:E0:A7:97:EA:D2", pairing_file=str(pairing_file)
+    )
+    pairing = _FakePairing(_outlet_accessories())
+    monkeypatch.setattr(
+        eve_outlet, "_build_controller", lambda adapter: _FakeController(pairing)
+    )
+    import asyncio
+
+    asyncio.run(EveOutlet(cfg).set(True))
+    assert pairing.written == [(1, 9, True)]
 
 
 def test_set_caches_aid_iid(monkeypatch, paired: EveOutletConfig) -> None:
