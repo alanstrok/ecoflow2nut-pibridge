@@ -108,6 +108,16 @@ class _FakeController:
         return self._pairing
 
 
+def _patch_connected(monkeypatch, controller) -> None:
+    """Bypass the real bleak scan + seed; hand back a fake started controller."""
+
+    async def _conn(adapter, device_id, timeout):
+        controller.started = True
+        return controller
+
+    monkeypatch.setattr(eve_outlet, "_connected_controller", _conn)
+
+
 def _outlet_accessories() -> list[dict]:
     return [
         {
@@ -136,7 +146,7 @@ def paired(tmp_path: Path) -> EveOutletConfig:
 def test_set_writes_on_characteristic(monkeypatch, paired: EveOutletConfig) -> None:
     pairing = _FakePairing(_outlet_accessories())
     controller = _FakeController(pairing)
-    monkeypatch.setattr(eve_outlet, "_build_controller", lambda adapter: controller)
+    _patch_connected(monkeypatch, controller)
 
     import asyncio
 
@@ -156,9 +166,7 @@ def test_select_pairing_is_case_insensitive(monkeypatch, tmp_path: Path) -> None
         enabled=True, device_id="6E:E0:A7:97:EA:D2", pairing_file=str(pairing_file)
     )
     pairing = _FakePairing(_outlet_accessories())
-    monkeypatch.setattr(
-        eve_outlet, "_build_controller", lambda adapter: _FakeController(pairing)
-    )
+    _patch_connected(monkeypatch, _FakeController(pairing))
     import asyncio
 
     asyncio.run(EveOutlet(cfg).set(True))
@@ -167,9 +175,7 @@ def test_select_pairing_is_case_insensitive(monkeypatch, tmp_path: Path) -> None
 
 def test_set_caches_aid_iid(monkeypatch, paired: EveOutletConfig) -> None:
     pairing = _FakePairing(_outlet_accessories())
-    monkeypatch.setattr(
-        eve_outlet, "_build_controller", lambda adapter: _FakeController(pairing)
-    )
+    _patch_connected(monkeypatch, _FakeController(pairing))
     import asyncio
 
     outlet = EveOutlet(paired)
@@ -187,9 +193,7 @@ def test_missing_pairing_file_raises(tmp_path: Path) -> None:
 
 def test_no_on_characteristic_raises(monkeypatch, paired: EveOutletConfig) -> None:
     pairing = _FakePairing([{"aid": 1, "services": [{"characteristics": []}]}])
-    monkeypatch.setattr(
-        eve_outlet, "_build_controller", lambda adapter: _FakeController(pairing)
-    )
+    _patch_connected(monkeypatch, _FakeController(pairing))
     import asyncio
 
     with pytest.raises(EveError, match="no On characteristic"):

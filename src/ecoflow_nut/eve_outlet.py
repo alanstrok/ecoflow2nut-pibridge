@@ -24,6 +24,7 @@ Design notes:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from pathlib import Path
 from typing import Any
@@ -109,6 +110,69 @@ def _build_controller(adapter: str) -> Any:
     return Controller(bleak_scanner_instance=_make_scanner(adapter))
 
 
+async def _scan_for_device(
+    adapter: str, device_id: str, timeout: int
+) -> tuple[Any, Any]:
+    """Find a specific HomeKit accessory with a plain bleak scan.
+
+    Returns ``(BLEDevice, AdvertisementData)`` for the accessory whose HomeKit
+    advert id matches ``device_id``, or ``(None, None)`` if not seen in time.
+    """
+    from bleak import BleakScanner
+
+    target = _norm_id(device_id)
+    found: dict[str, Any] = {}
+    done = asyncio.Event()
+
+    def _cb(device: Any, adv: Any) -> None:
+        apple = (adv.manufacturer_data or {}).get(0x004C)
+        homekit = parse_homekit_advert(apple) if apple else None
+        if homekit is not None and homekit["device_id"] == target:
+            found["device"], found["adv"] = device, adv
+            done.set()
+
+    scanner = BleakScanner(detection_callback=_cb, adapter=adapter)
+    await scanner.start()
+    try:
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(done.wait(), timeout)
+    finally:
+        await scanner.stop()
+    return found.get("device"), found.get("adv")
+
+
+def _ble_transport(controller: Any) -> Any:
+    for transport in controller.transports.values():
+        if hasattr(transport, "_device_detected"):
+            return transport
+    raise EveError("aiohomekit BLE transport is unavailable")
+
+
+async def _connected_controller(adapter: str, device_id: str, timeout: int) -> Any:
+    """Build a started Controller with ``device_id`` seeded into its discovery cache.
+
+    aiohomekit's own BLE scan pipeline does not reliably populate discoveries
+    when driven standalone (it is built around Home Assistant's always-on
+    bluetooth stack), so we locate the accessory with our own bleak scan and feed
+    the result straight into aiohomekit. The caller owns the returned controller
+    and must ``async_stop`` it.
+    """
+    device, _adv = await _scan_for_device(adapter, device_id, timeout)
+    if device is None:
+        raise EveError(
+            f"accessory {_norm_id(device_id)} not seen on {adapter}; "
+            "is it in range and advertising? (try 'eve scan')"
+        )
+    controller = _build_controller(adapter)
+    await controller.async_start()
+    try:
+        _ble_transport(controller)._device_detected(device, _adv)
+    except Exception:
+        await controller.async_stop()
+        raise
+    return controller
+
+
 class EveOutlet:
     """Turn a paired HomeKit-over-BLE outlet on or off on demand."""
 
@@ -160,8 +224,9 @@ class EveOutlet:
     async def set(self, on: bool) -> None:
         """Connect, flip the outlet's On characteristic, and disconnect."""
         alias, pairing_data = self._select_pairing(self._pairing_store())
-        controller = _build_controller(self._config.adapter)
-        await controller.async_start()
+        controller = await _connected_controller(
+            self._config.adapter, alias, self._config.connect_timeout_seconds
+        )
         try:
             pairing = controller.load_pairing(alias, pairing_data)
             aid, iid = await self._on_characteristic(pairing)
@@ -178,8 +243,9 @@ class EveOutlet:
     async def status(self) -> bool | None:
         """Return the outlet's current On value, or None if unavailable."""
         alias, pairing_data = self._select_pairing(self._pairing_store())
-        controller = _build_controller(self._config.adapter)
-        await controller.async_start()
+        controller = await _connected_controller(
+            self._config.adapter, alias, self._config.connect_timeout_seconds
+        )
         try:
             pairing = controller.load_pairing(alias, pairing_data)
             aid, iid = await self._on_characteristic(pairing)
@@ -283,12 +349,14 @@ async def pair(config: EveOutletConfig) -> str:
         raise EveError("set eve.setup_code (8-digit HomeKit code) to pair")
 
     device_id = _norm_id(config.device_id)
-    controller = _build_controller(config.adapter)
-    await controller.async_start()
+    controller = await _connected_controller(
+        config.adapter, device_id, config.connect_timeout_seconds
+    )
     try:
-        discovery = await controller.async_find(
-            device_id, timeout=config.connect_timeout_seconds
-        )
+        transport = _ble_transport(controller)
+        discovery = transport.discoveries.get(device_id)
+        if discovery is None:
+            discovery = await controller.async_find(device_id, timeout=10)
         finish_pairing = await discovery.async_start_pairing(device_id)
         pairing = await finish_pairing(config.setup_code)
         path = Path(config.pairing_file)
