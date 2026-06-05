@@ -49,6 +49,32 @@ def _is_on_char(type_str: Any) -> bool:
     return t == _ON_SHORT or t == _ON_FULL
 
 
+def _make_scanner(adapter: str) -> Any:
+    """A BleakScanner that still exposes ``register_detection_callback``.
+
+    aiohomekit's BLE backend drives the scanner with the legacy
+    ``register_detection_callback`` API (that's what Home Assistant's bluetooth
+    wrapper provides), but bleak >= 0.22 removed it in favour of a constructor
+    ``detection_callback``. This subclass bridges the two: it installs a stable
+    dispatcher at construction time and lets aiohomekit (re)point it later.
+    """
+    from bleak import BleakScanner
+
+    class _CompatScanner(BleakScanner):  # type: ignore[misc]
+        def __init__(self, **kwargs: Any) -> None:
+            self._ahk_callback: Any = None
+            super().__init__(detection_callback=self._dispatch, **kwargs)
+
+        def _dispatch(self, device: Any, advertisement_data: Any) -> None:
+            if self._ahk_callback is not None:
+                self._ahk_callback(device, advertisement_data)
+
+        def register_detection_callback(self, callback: Any) -> None:
+            self._ahk_callback = callback
+
+    return _CompatScanner(adapter=adapter)
+
+
 def _build_controller(adapter: str) -> Any:
     """Construct a BLE-only aiohomekit Controller bound to ``adapter``.
 
@@ -63,7 +89,6 @@ def _build_controller(adapter: str) -> Any:
             "aiohomekit is not installed; install the optional extra with "
             "'pip install ecoflow-nut-bridge[eve]'"
         ) from exc
-    from bleak import BleakScanner
 
     # aiohomekit's async_start otherwise also tries to bring up the IP (zeroconf)
     # and CoAP transports. With no AsyncZeroconf instance supplied that raises
@@ -74,8 +99,7 @@ def _build_controller(adapter: str) -> Any:
         if hasattr(_controller_mod, _flag):
             setattr(_controller_mod, _flag, False)
 
-    scanner = BleakScanner(adapter=adapter)
-    return Controller(bleak_scanner_instance=scanner)
+    return Controller(bleak_scanner_instance=_make_scanner(adapter))
 
 
 class EveOutlet:
