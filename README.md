@@ -177,7 +177,7 @@ Full annotated example: [`config/config.example.yaml`](config/config.example.yam
 | `logging.level` / `logging.format` | `INFO` / `json` | structlog level and `json`/`console` output |
 | `auto_shutdown.enabled` | `false` | Master switch for the auto-cut policy (opt-in) |
 | `auto_shutdown.trigger_soc_percent` | `10` | Arm + cut at/below this SoC, on battery only |
-| `auto_shutdown.recover_soc_percent` | `15` | Disarm once SoC recovers to this (or AC returns) |
+| `auto_shutdown.recover_soc_percent` | `15` | "Recovered" SoC: disarms the SoC trigger, and gates `restore_on_recovery` — output is restored only once SoC climbs back to this |
 | `auto_shutdown.grace_period_seconds` | `300` | Delay after arming (SoC trigger) before cutting |
 | `auto_shutdown.min_load_watts` | `null` | Low-load trigger: cut when AC output stays ≤ this (on battery, any SoC). `null` disables |
 | `auto_shutdown.load_grace_seconds` | `60` | Debounce for the low-load trigger |
@@ -280,9 +280,14 @@ ecoflow-nut eve on / off / status   # manual control / verification
 > (connect → write → disconnect), so even on a shared adapter the EcoFlow link is
 > only briefly perturbed during an actual cut/restore.
 
-> **Recovery semantics.** `restore_on_recovery` fires when **AC input returns**
-> (grid back / charging). If you run fully off-grid on solar, SoC climbing while
-> still "on battery" disarms the trigger but does **not** restore the outlet.
+> **Recovery semantics.** `restore_on_recovery` turns the outlet back on after
+> AC returns, but **only once SoC has climbed back to `recover_soc_percent`** —
+> so the server isn't re-powered until the battery again holds enough charge to
+> shut it down cleanly if mains drops again. If the grid returns at a low SoC,
+> the outlet stays off and is switched on when charging reaches that level.
+> This also survives a **full drain that reboots the bridge**: on startup, if it
+> comes up on AC but below `recover_soc_percent`, it holds the outlet off until
+> SoC recovers (so the server doesn't boot without a shutdown buffer).
 
 ### NUT variable mapping
 

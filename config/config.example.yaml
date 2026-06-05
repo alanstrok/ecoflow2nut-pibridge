@@ -114,7 +114,10 @@ settings_file: "/var/lib/ecoflow-nut/settings.json"
 auto_shutdown:
   enabled: false
   trigger_soc_percent: 10        # arm + cut at/below this SoC (on battery only)
-  recover_soc_percent: 15        # disarm once SoC climbs back to this (or AC returns)
+  recover_soc_percent: 15        # "recovered" SoC: disarms the SoC trigger, and
+                                 # gates RESTORE -- after a cut, output is turned
+                                 # back on only once SoC climbs back to this (so
+                                 # there's buffer to shut down again), even on AC.
   grace_period_seconds: 300      # wait this long after arming before cutting
   # Low-load trigger: when on battery and AC output stays at/below this many
   # watts for load_grace_seconds, cut AC (the protected gear has powered off).

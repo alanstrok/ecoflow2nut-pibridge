@@ -97,6 +97,8 @@ class Daemon:
         # Last on/off state we commanded the Eve outlet into (the outlet is not
         # polled to avoid extra BLE traffic; None == unknown until first command).
         self._eve_state: bool | None = None
+        # One-shot startup reconciliation of the auto-shutdown cut state.
+        self._reconciled = False
         # Latest published telemetry, surfaced to the optional web UI / DB logger.
         self._latest_state: DeviceState | None = None
         self._latest_status: str = "OB"
@@ -433,6 +435,8 @@ class Daemon:
         )
 
         on_battery = status != "OL"
+        if not self._reconciled:
+            self._reconcile_shutdown_state(state.soc_percent, on_battery)
         action = self._autoshutdown.evaluate(
             time.monotonic(),
             state.soc_percent,
@@ -441,6 +445,35 @@ class Daemon:
         )
         if action is not ShutdownAction.NONE:
             self._handle_shutdown_action(action)
+
+    def _reconcile_shutdown_state(self, soc: float | None, on_battery: bool) -> None:
+        """One-shot startup check for a deep-discharge reboot.
+
+        Auto-shutdown state lives in memory, so a full battery drain that
+        power-cycles the host loses the fact that we had cut output. If we boot
+        on line power but still below ``recover_soc_percent``, assume we are
+        recovering from such a drain: hold the cut outputs off until SoC climbs
+        back to the recover level (so protected gear isn't re-powered without a
+        battery buffer to shut down again).
+        """
+        self._reconciled = True
+        cfg = self._config.auto_shutdown
+        if (
+            cfg.enabled
+            and cfg.restore_on_recovery
+            and self._cut_outputs()
+            and not on_battery
+            and soc is not None
+            and soc < cfg.recover_soc_percent
+        ):
+            log.warning(
+                "auto_shutdown.hold_until_recovery",
+                soc=soc,
+                recover_soc=cfg.recover_soc_percent,
+                outputs=self._cut_outputs(),
+            )
+            self._autoshutdown.force_triggered()
+            self._send_outputs(enabled=False)
 
     def _handle_shutdown_action(self, action: ShutdownAction) -> None:
         cfg = self._config.auto_shutdown
