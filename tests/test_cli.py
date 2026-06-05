@@ -12,8 +12,8 @@ def _write_config(tmp_path) -> str:
     cfg = tmp_path / "config.yaml"
     cfg.write_text(
         "ecoflow:\n"
-        '  mac: "9C:9E:6E:74:02:D2"\n'
-        '  serial: "P231ZE1APH4E1669"\n'
+        '  mac: "AA:BB:CC:DD:EE:FF"\n'
+        '  serial: "P231XXXXXXXXXXXX"\n'
         "nut:\n"
         f'  dev_file_path: "{dev}"\n'
         "logging:\n"

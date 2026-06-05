@@ -1,5 +1,7 @@
 # ecoflow-nut-bridge
 
+*🇬🇧 English · [🇫🇷 Français](README.fr.md)*
+
 Expose an **EcoFlow DELTA 3** portable power station as a standard
 **NUT (Network UPS Tools)** UPS over Bluetooth Low Energy. The bridge polls the
 DELTA 3 over BLE, translates its telemetry (state of charge, AC input/output

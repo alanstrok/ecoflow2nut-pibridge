@@ -3,9 +3,9 @@
 
 ecoflow:
   # BLE MAC address of your DELTA 3 (find with: bluetoothctl scan on).
-  mac: "9C:9E:6E:74:02:D2"
+  mac: "AA:BB:CC:DD:EE:FF"
   # Serial number, printed on the unit / shown in the EcoFlow app.
-  serial: "P231ZE1APH4E1669"
+  serial: "P231XXXXXXXXXXXX"
   model: "delta3"
   poll_interval_seconds: 5
 
@@ -44,7 +44,7 @@ nut:
     output_frequency: 50
     manufacturer: "EcoFlow"
     model: "DELTA 3"
-    serial: "P231ZE1APH4E1669"
+    serial: "P231XXXXXXXXXXXX"
 
 logging:
   level: "INFO"
