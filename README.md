@@ -275,6 +275,13 @@ The published Docker image already includes the web + Postgres extras; just set
 
 It also provides:
 
+* **Visual status indicators** — a coloured LED next to each control. The **AC**
+  output shows a true ON/OFF from the device's decoded flag (`flow_info_ac_out`).
+  **USB** is inferred from power draw (the device exposes no USB enable flag), so
+  it reads `ON · NW` when drawing and `— idle/off` otherwise — 0 W is ambiguous,
+  noted in its tooltip. **12V DC** shows `n/a` (the device sends no DC
+  telemetry). The **auto-shutdown** badge is grey *Disabled*, green *Monitoring*,
+  pulsing amber *ARMED · cutting in Ns*, or pulsing red *CUT sent*.
 * **Live settings editing** — a Settings panel edits "runtime-safe" config from
   the browser: the full auto-shutdown policy (trigger/recover SoC %, grace
   periods, min-load watts, which outputs to cut, restore-on-recovery), NUT
@@ -368,6 +375,14 @@ Each logged sample is classified HC/HP by its **local** time-of-day, integrated
 to kWh, and priced. The panel shows the HC/HP split, total cost, average/peak
 draw and a projected €/day and €/month over the selected range. All of these
 values are also editable live from the web UI's Settings panel.
+
+> **What's stored vs derived.** Only the **power samples** are persisted (in the
+> telemetry store). The kWh and cost figures are **computed on the fly** from
+> those samples and your current prices — nothing monetary is written to the
+> database. A practical upshot: editing a price re-prices the *entire* history
+> retroactively. (Prices/HC hours live in `settings.json`, not the telemetry DB;
+> there is no per-day price history, so a mid-history tariff change re-prices all
+> past days at the new rate.)
 
 ## 7. NUT client setup
 
