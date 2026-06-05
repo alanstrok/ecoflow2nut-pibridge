@@ -23,6 +23,7 @@ Design notes:
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -200,6 +201,65 @@ async def discover(adapter: str, timeout: int = 10) -> list[dict[str, Any]]:
     finally:
         await controller.async_stop()
     return found
+
+
+# HomeKit accessory categories (HAP spec, partial) for human-readable scan output.
+_HK_CATEGORIES = {1: "Other", 2: "Bridge", 7: "Outlet", 8: "Switch", 10: "Sensor"}
+
+
+def parse_homekit_advert(apple_mfr_data: bytes) -> dict[str, Any] | None:
+    """Decode an Apple manufacturer-data blob as a HomeKit (HAP-BLE) advert.
+
+    Apple manufacturer data carries several types; HomeKit uses type ``0x06``.
+    Layout: type(1) | subtype+len(1) | status-flags(1) | device-id(6) |
+    category(2, LE) | global-state(2) | config(1) | compat(1). The low bit of
+    the status flags is set while the accessory is *unpaired* (i.e. pairable).
+    Returns ``None`` if the blob is not a HomeKit advert.
+    """
+    if len(apple_mfr_data) < 11 or apple_mfr_data[0] != 0x06:
+        return None
+    status = apple_mfr_data[2]
+    device_id = ":".join(f"{b:02X}" for b in apple_mfr_data[3:9])
+    category = int.from_bytes(apple_mfr_data[9:11], "little")
+    return {
+        "device_id": device_id,
+        "category": category,
+        "category_name": _HK_CATEGORIES.get(category, f"#{category}"),
+        "status_flags": status,
+        # HAP "Status Flag" bit 0: 1 == not paired (discoverable/pairable).
+        "paired": not bool(status & 0x01),
+    }
+
+
+async def raw_scan(adapter: str, timeout: int = 10) -> list[dict[str, Any]]:
+    """Low-level BLE scan that decodes HomeKit adverts itself (a diagnostic).
+
+    Unlike :func:`discover` this does not go through aiohomekit's filtering, so
+    it surfaces every device the radio sees and, for HomeKit accessories, their
+    ``device_id`` and paired state -- exactly what's needed to tell "not
+    advertising" apart from "still paired to Apple Home".
+    """
+    from bleak import BleakScanner
+
+    seen: dict[str, dict[str, Any]] = {}
+
+    def _cb(device: Any, adv: Any) -> None:
+        apple = (adv.manufacturer_data or {}).get(0x004C)
+        homekit = parse_homekit_advert(apple) if apple else None
+        entry = seen.setdefault(device.address, {"address": device.address})
+        entry["name"] = adv.local_name or entry.get("name")
+        entry["rssi"] = adv.rssi
+        if homekit is not None:
+            entry["homekit"] = homekit
+
+    scanner = BleakScanner(detection_callback=_cb, adapter=adapter)
+    await scanner.start()
+    try:
+        await asyncio.sleep(timeout)
+    finally:
+        await scanner.stop()
+    # HomeKit accessories first, then the rest, for readable output.
+    return sorted(seen.values(), key=lambda e: "homekit" not in e)
 
 
 async def pair(config: EveOutletConfig) -> str:

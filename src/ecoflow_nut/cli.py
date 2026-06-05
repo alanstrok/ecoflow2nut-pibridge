@@ -183,6 +183,22 @@ def eve_discover(ctx: click.Context, timeout: int) -> None:
     click.echo(json.dumps(found, indent=2))
 
 
+@eve.command("scan")
+@click.option("--timeout", default=15, show_default=True, help="Scan seconds.")
+@click.pass_context
+def eve_scan(ctx: click.Context, timeout: int) -> None:
+    """Low-level BLE scan that decodes HomeKit adverts (a diagnostic).
+
+    Surfaces every device the radio sees -- bypassing aiohomekit's filtering --
+    and for HomeKit accessories shows their device_id and paired state, to tell
+    "not advertising" apart from "still paired to Apple Home".
+    """
+    config = load_config(ctx.obj["config_path"])
+    configure_logging(config.logging.level, config.logging.format)
+    found = asyncio.run(eve_outlet.raw_scan(config.eve.adapter, timeout))
+    click.echo(json.dumps(found, indent=2))
+
+
 @eve.command("pair")
 @click.pass_context
 def eve_pair(ctx: click.Context) -> None:
