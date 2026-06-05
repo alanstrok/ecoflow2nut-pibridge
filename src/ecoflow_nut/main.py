@@ -85,6 +85,15 @@ class Daemon:
         self._last_write_monotonic = time.monotonic()
         self._autoshutdown = AutoShutdownController(config.auto_shutdown)
         self._active_client: EcoFlowBLE | None = None
+        # Latest published telemetry, surfaced to the optional web UI / DB logger.
+        self._latest_state: DeviceState | None = None
+        self._latest_status: str = "OB"
+        self._latest_runtime: int = 0
+        self._latest_update_monotonic: float = 0.0
+        # Optional subsystems (web UI / Postgres), created in run() when enabled.
+        self._web: object | None = None
+        self._store: object | None = None
+        self._bg_tasks: set[asyncio.Task[None]] = set()
 
     def request_stop(self, *_: object) -> None:
         log.info("daemon.stop_requested")
@@ -96,6 +105,8 @@ class Daemon:
         # "online" so clients do not briefly see "on battery" at startup.
         self._writer.write(seed_state())
 
+        await self._start_store()
+        await self._start_web()
         control = await self._start_control_server()
         watchdog = asyncio.create_task(self._watchdog())
         try:
@@ -137,7 +148,143 @@ class Daemon:
             if control is not None:
                 control.close()
             self._remove_control_socket()
+            await self._stop_web()
+            await self._stop_store()
         return 0
+
+    # -- optional subsystems: web UI + Postgres ----------------------------- #
+    async def _start_store(self) -> None:
+        if not self._config.postgres.enabled:
+            return
+        if not self._config.postgres.dsn:
+            log.warning("db.disabled", reason="postgres.enabled but no dsn configured")
+            return
+        try:
+            from .db import TelemetryStore
+
+            store = TelemetryStore(self._config.postgres)
+            await store.connect()
+            self._store = store
+        except Exception as exc:  # noqa: BLE001 - DB must not prevent the bridge
+            log.error("db.start_failed", error=str(exc), error_type=type(exc).__name__)
+            self._store = None
+
+    async def _stop_store(self) -> None:
+        if self._store is not None:
+            try:
+                await self._store.close()  # type: ignore[attr-defined]
+            except Exception as exc:  # noqa: BLE001
+                log.debug("db.close_failed", error=str(exc))
+            self._store = None
+
+    async def _start_web(self) -> None:
+        if not self._config.web.enabled:
+            return
+        try:
+            from .webapp import WebServer
+
+            web = WebServer(
+                self._config.web,
+                state_provider=self._web_state,
+                control=self.control_output,
+                history=self._web_history,
+                autoshutdown_status=self._autoshutdown_status,
+                set_autoshutdown=self._set_autoshutdown,
+                history_enabled=self._store is not None,
+            )
+            await web.start()
+            self._web = web
+        except Exception as exc:  # noqa: BLE001 - web UI must not prevent the bridge
+            log.error("web.start_failed", error=str(exc), error_type=type(exc).__name__)
+            self._web = None
+
+    async def _stop_web(self) -> None:
+        if self._web is not None:
+            try:
+                await self._web.stop()  # type: ignore[attr-defined]
+            except Exception as exc:  # noqa: BLE001
+                log.debug("web.stop_failed", error=str(exc))
+            self._web = None
+
+    def _web_state(self) -> dict[str, object]:
+        """Current telemetry snapshot for the web UI's ``/api/state``."""
+        s = self._latest_state
+        age = (
+            round(time.monotonic() - self._latest_update_monotonic, 1)
+            if self._latest_update_monotonic
+            else None
+        )
+        if s is None:
+            return {"status": self._latest_status, "updated_seconds_ago": age}
+        return {
+            "soc_percent": s.soc_percent,
+            "ac_input_watts": s.ac_input_watts,
+            "ac_output_watts": s.ac_output_watts,
+            "usb_output_watts": s.usb_output_watts,
+            "usbc_output_watts": s.usbc_output_watts,
+            "input_watts": s.input_watts,
+            "output_watts": s.output_watts,
+            "ac_input_present": s.ac_input_present,
+            "ac_output_on": s.ac_output_on,
+            "remain_charge_minutes": s.remain_charge_minutes,
+            "remain_discharge_minutes": s.remain_discharge_minutes,
+            "error_code": s.error_code,
+            "status": self._latest_status,
+            "runtime_seconds": self._latest_runtime,
+            "updated_seconds_ago": age,
+        }
+
+    async def _web_history(self, minutes: int) -> list[dict[str, object]]:
+        if self._store is None:
+            return []
+        return await self._store.history(  # type: ignore[attr-defined]
+            self._config.nut.device_name, minutes
+        )
+
+    def _autoshutdown_status(self) -> dict[str, object]:
+        cfg = self._config.auto_shutdown
+        return {
+            "enabled": cfg.enabled,
+            "armed": self._autoshutdown.armed,
+            "triggered": self._autoshutdown.triggered,
+            "seconds_until_cut": self._autoshutdown.seconds_until_cut(time.monotonic()),
+            "trigger_soc_percent": cfg.trigger_soc_percent,
+            "recover_soc_percent": cfg.recover_soc_percent,
+            "grace_period_seconds": cfg.grace_period_seconds,
+            "cut_outputs": self._cut_outputs(),
+        }
+
+    async def _set_autoshutdown(self, enabled: bool) -> None:
+        """Enable/disable the auto-shutdown policy live (resets its state)."""
+        self._config.auto_shutdown.enabled = enabled
+        self._autoshutdown = AutoShutdownController(self._config.auto_shutdown)
+        log.warning("auto_shutdown.toggled", enabled=enabled)
+
+    async def control_output(self, kind: str, enabled: bool) -> str:
+        """Send an output toggle over the live BLE connection. Raises on failure."""
+        if kind not in OUTPUT_BUILDERS:
+            raise ValueError(f"unknown output: {kind}")
+        client = self._active_client
+        if client is None or not client.is_connected:
+            raise RuntimeError("not connected to device")
+        await client.send_command_packet(OUTPUT_BUILDERS[kind](enabled))
+        log.info("control.command", output=kind, enabled=enabled)
+        return f"{kind} {'on' if enabled else 'off'}"
+
+    def _record_sample(self, state: DeviceState, status: str, runtime: int) -> None:
+        """Fire-and-forget a Postgres write (errors are swallowed in the store)."""
+        store = self._store
+        if store is None:
+            return
+
+        async def _write() -> None:
+            await store.record(  # type: ignore[attr-defined]
+                self._config.nut.device_name, state, status, runtime
+            )
+
+        task = asyncio.create_task(_write())
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
 
     # -- control socket ----------------------------------------------------- #
     async def _start_control_server(self) -> asyncio.AbstractServer | None:
@@ -179,12 +326,10 @@ class Daemon:
 
     async def _exec_control(self, line: str) -> str:
         kind, enabled = parse_control_command(line)  # raises ValueError -> error
-        client = self._active_client
-        if client is None or not client.is_connected:
-            return "error: not connected to device"
-        await client.send_command_packet(OUTPUT_BUILDERS[kind](enabled))
-        log.info("control.command", output=kind, enabled=enabled)
-        return f"ok: {kind} {'on' if enabled else 'off'}"
+        try:
+            return "ok: " + await self.control_output(kind, enabled)
+        except RuntimeError as exc:
+            return f"error: {exc}"
 
     async def _poll_loop(self, client: EcoFlowBLE) -> None:
         interval = self._config.ecoflow.poll_interval_seconds
@@ -198,8 +343,16 @@ class Daemon:
         if not state.is_complete:
             return
         variables = self._writer.write(state)
-        self._last_write_monotonic = time.monotonic()
+        now = time.monotonic()
+        self._last_write_monotonic = now
         status = variables.get("ups.status", "OB")
+        # Snapshot the latest values for the web UI and Postgres logger.
+        self._latest_state = state
+        self._latest_status = status
+        self._latest_runtime = int(variables.get("battery.runtime", "0"))
+        self._latest_update_monotonic = now
+        if self._store is not None:
+            self._record_sample(state, status, self._latest_runtime)
         log.info(
             "state.updated",
             soc=state.soc_percent,

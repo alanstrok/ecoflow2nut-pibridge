@@ -243,6 +243,72 @@ sudo -u ecoflow /opt/ecoflow-nut-bridge/.venv/bin/ecoflow-nut \
 docker exec ecoflow-nut-bridge ecoflow-nut --config /app/config/config.yaml ac off
 ```
 
+### Web UI & data logging
+
+An optional control dashboard runs **inside the daemon**, so it shares the single
+BLE connection — the page shows live telemetry and its toggles go out over the
+existing link (no second connection, no stopping the bridge). It is **disabled by
+default**.
+
+```yaml
+web:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8080
+  auth_token: ""            # required for control actions; prefer ECOFLOW_WEB_TOKEN
+  require_auth_for_read: false
+```
+
+Install the extra and start the bridge:
+
+```bash
+pip install "ecoflow-nut-bridge[web]"        # or [server] for web + postgres
+ECOFLOW_WEB_TOKEN=somesecret ecoflow-nut --config config.yaml run
+# open http://<bridge-host>:8080
+```
+
+The dashboard shows SoC, AC in/out watts, USB/USB-C watts, status, runtime and
+charge/discharge estimates (auto-refreshing), with on/off buttons for **AC**,
+**USB** and **12V DC**, plus the auto-shutdown state (and a live enable/disable).
+The published Docker image already includes the web + Postgres extras; just set
+`web.enabled: true` and expose port 8080.
+
+**Auth.** Control actions (port toggles, auto-shutdown) require `auth_token` —
+sent as an `X-Auth-Token` header, `Authorization: Bearer`, or `?token=`. The
+browser prompts for it and stores it locally. If no token is configured the
+controls are disabled and only the read-only dashboard is served; set
+`require_auth_for_read: true` to also gate telemetry. The token can cut power, so
+keep the UI on a trusted network.
+
+#### Postgres history
+
+With `postgres.enabled` and a DSN, the daemon writes one telemetry sample per
+poll and the dashboard's history charts read it back (down-sampled server-side).
+The bridge runs fine if the database is absent or down — logging failures are
+swallowed and never interrupt the NUT path.
+
+```yaml
+postgres:
+  enabled: true
+  dsn: ""                   # prefer the ECOFLOW_PG_DSN env var
+  table: "ecoflow_samples"
+  min_interval_seconds: 0   # throttle writes (0 = every frame)
+  retention_days: 0         # 0 = keep forever
+```
+
+```bash
+pip install "ecoflow-nut-bridge[postgres]"   # or [server] for web + postgres
+ECOFLOW_PG_DSN=postgresql://ecoflow:secret@localhost:5432/ecoflow \
+  ecoflow-nut --config config.yaml run
+```
+
+The table is created automatically on first connect (Postgres 14+; tested
+against **Postgres 17**). It stores `ts, device, soc_percent, ac_input_watts,
+ac_output_watts, usb/usbc watts, input/output watts, runtime_seconds, status`
+and the discharge/charge estimates — query it directly for your own dashboards
+(Grafana, etc.). See [`docker-compose.example.yml`](docker-compose.example.yml)
+for a bridge + Postgres 17 stack.
+
 ## 7. NUT client setup
 
 ### Unraid (built-in NUT client)
