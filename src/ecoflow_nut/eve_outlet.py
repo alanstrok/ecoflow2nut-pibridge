@@ -57,12 +57,22 @@ def _build_controller(adapter: str) -> Any:
     """
     try:
         from aiohomekit.controller import Controller
+        from aiohomekit.controller import controller as _controller_mod
     except ImportError as exc:  # pragma: no cover - exercised via CLI/runtime
         raise EveError(
             "aiohomekit is not installed; install the optional extra with "
             "'pip install ecoflow-nut-bridge[eve]'"
         ) from exc
     from bleak import BleakScanner
+
+    # aiohomekit's async_start otherwise also tries to bring up the IP (zeroconf)
+    # and CoAP transports. With no AsyncZeroconf instance supplied that raises
+    # ("AttributeError: 'NoneType' object has no attribute 'zeroconf'") before the
+    # BLE backend is even registered. We only ever want BLE here, so switch the
+    # other transports off (they are gated on these module-level flags).
+    for _flag in ("IP_TRANSPORT_SUPPORTED", "COAP_TRANSPORT_SUPPORTED"):
+        if hasattr(_controller_mod, _flag):
+            setattr(_controller_mod, _flag, False)
 
     scanner = BleakScanner(adapter=adapter)
     return Controller(bleak_scanner_instance=scanner)
