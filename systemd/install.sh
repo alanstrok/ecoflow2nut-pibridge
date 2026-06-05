@@ -47,13 +47,25 @@ chown -R ecoflow:nut "${APP_DIR}"
 
 echo "==> Installing NUT configuration into ${NUT_CONF_DIR}..."
 mkdir -p "${NUT_CONF_DIR}"
-for f in ups.conf upsd.conf upsd.users upsmon.conf; do
-    if [ ! -f "${NUT_CONF_DIR}/${f}" ]; then
-        cp "${REPO_DIR}/nut/${f}" "${NUT_CONF_DIR}/${f}"
-    else
-        echo "    keeping existing ${NUT_CONF_DIR}/${f}"
+# ups.conf and upsd.conf are structural (the UPS definition + LISTEN) and hold
+# no secrets -- always install ours. The nut-server package ships empty defaults,
+# so "keep existing" would leave upsd with no UPS and it fails to start. Back up
+# any pre-existing file once to <file>.orig.
+for f in ups.conf upsd.conf; do
+    target="${NUT_CONF_DIR}/${f}"
+    if [ -f "${target}" ] && [ ! -f "${target}.orig" ]; then
+        cp "${target}" "${target}.orig"
     fi
+    cp "${REPO_DIR}/nut/${f}" "${target}"
 done
+# upsd.users / upsmon.conf may hold user-set passwords -- only install ours if
+# the existing file defines nothing (i.e. the empty package default).
+if ! grep -q '^\[' "${NUT_CONF_DIR}/upsd.users" 2>/dev/null; then
+    cp "${REPO_DIR}/nut/upsd.users" "${NUT_CONF_DIR}/upsd.users"
+fi
+if ! grep -q '^MONITOR' "${NUT_CONF_DIR}/upsmon.conf" 2>/dev/null; then
+    cp "${REPO_DIR}/nut/upsmon.conf" "${NUT_CONF_DIR}/upsmon.conf"
+fi
 chown -R root:nut "${NUT_CONF_DIR}"
 chmod 640 "${NUT_CONF_DIR}/upsd.users"
 # NUT must run in "netserver" mode to serve upsd.
