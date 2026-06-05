@@ -157,6 +157,24 @@ class SqliteConfig:
 
 
 @dataclass(slots=True)
+class PricingConfig:
+    """Time-of-use electricity pricing for the web UI's cost estimate.
+
+    French "Heures Creuses / Heures Pleines" (off-peak / peak) tariff. Cost is
+    metered against AC *input* (grid draw). The HC window is a single span that
+    may wrap midnight (default 22:00 -> 06:00); all other hours are HP. Prices
+    are per kWh in ``currency``. These are editable live from the web UI.
+    """
+
+    enabled: bool = False
+    currency: str = "€"
+    hc_start: str = "22:00"
+    hc_end: str = "06:00"
+    price_hc: float = 0.0
+    price_hp: float = 0.0
+
+
+@dataclass(slots=True)
 class Config:
     ecoflow: EcoflowConfig
     ble: BleConfig = field(default_factory=BleConfig)
@@ -166,10 +184,14 @@ class Config:
     web: WebConfig = field(default_factory=WebConfig)
     postgres: PostgresConfig = field(default_factory=PostgresConfig)
     sqlite: SqliteConfig = field(default_factory=SqliteConfig)
+    pricing: PricingConfig = field(default_factory=PricingConfig)
     # Local control socket: the running daemon listens here so the CLI can send
     # output commands over the daemon's existing BLE connection (the device only
     # allows one connection at a time).
     control_socket_path: str = DEFAULT_CONTROL_SOCKET
+    # Where the web UI persists live-edited settings (overlaid on the YAML at
+    # startup). Lives in the systemd StateDirectory so it survives restarts.
+    settings_file: str = "/var/lib/ecoflow-nut/settings.json"
 
 
 def _filter(cls: type, data: dict[str, Any]) -> dict[str, Any]:
@@ -212,6 +234,7 @@ def load_config(path: str | Path) -> Config:
     postgres.dsn = os.environ.get(ENV_PG_DSN, postgres.dsn)
 
     sqlite = SqliteConfig(**_filter(SqliteConfig, raw.get("sqlite", {})))
+    pricing = PricingConfig(**_filter(PricingConfig, raw.get("pricing", {})))
 
     return Config(
         ecoflow=ecoflow,
@@ -222,5 +245,7 @@ def load_config(path: str | Path) -> Config:
         web=web,
         postgres=postgres,
         sqlite=sqlite,
+        pricing=pricing,
         control_socket_path=raw.get("control_socket_path", DEFAULT_CONTROL_SOCKET),
+        settings_file=raw.get("settings_file", "/var/lib/ecoflow-nut/settings.json"),
     )

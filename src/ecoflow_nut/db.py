@@ -185,6 +185,34 @@ class TelemetryStore:
             for r in rows
         ]
 
+    async def energy_series(
+        self, device: str, minutes: int, bucket_seconds: int
+    ) -> list[dict[str, Any]]:
+        """Average AC in/out watts per fixed-width bucket, for energy costing."""
+        if self._pool is None:
+            return []
+        minutes = max(1, int(minutes))
+        bucket_seconds = max(1, int(bucket_seconds))
+        rows = await self._pool.fetch(
+            f"""
+            SELECT
+                date_bin(make_interval(secs => $2), ts, 'epoch') AS bucket,
+                avg(ac_input_watts)::real AS in_w,
+                avg(ac_output_watts)::real AS out_w
+            FROM {self._table}
+            WHERE device = $1 AND ts >= now() - make_interval(mins => $3)
+            GROUP BY bucket
+            ORDER BY bucket ASC
+            """,
+            device,
+            bucket_seconds,
+            minutes,
+        )
+        return [
+            {"ts": r["bucket"].isoformat(), "in_w": r["in_w"], "out_w": r["out_w"]}
+            for r in rows
+        ]
+
     async def prune(self, device: str) -> None:
         """Delete rows older than the configured retention window (if any)."""
         if self._pool is None or not self._config.retention_days:

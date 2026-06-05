@@ -185,6 +185,42 @@ class SqliteTelemetryStore:
             for r in rows
         ]
 
+    async def energy_series(
+        self, device: str, minutes: int, bucket_seconds: int
+    ) -> list[dict[str, Any]]:
+        """Average AC in/out watts per fixed-width bucket, for energy costing."""
+        if self._conn is None:
+            return []
+        minutes = max(1, int(minutes))
+        bucket_seconds = max(1, int(bucket_seconds))
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._energy_series_sync, device, minutes, bucket_seconds
+            )
+
+    def _energy_series_sync(
+        self, device: str, minutes: int, bucket_seconds: int
+    ) -> list[dict[str, Any]]:
+        assert self._conn is not None
+        sql = (
+            "SELECT (CAST(strftime('%s', ts) AS INTEGER) / ?) * ? AS bucket, "
+            "avg(ac_input_watts) AS in_w, avg(ac_output_watts) AS out_w "
+            f"FROM {self._table} "
+            "WHERE device = ? AND ts >= datetime('now', ?) "
+            "GROUP BY bucket ORDER BY bucket ASC"
+        )
+        rows = self._conn.execute(
+            sql, (bucket_seconds, bucket_seconds, device, f"-{minutes} minutes")
+        ).fetchall()
+        return [
+            {
+                "ts": datetime.fromtimestamp(int(r["bucket"]), tz=UTC).isoformat(),
+                "in_w": r["in_w"],
+                "out_w": r["out_w"],
+            }
+            for r in rows
+        ]
+
     async def prune(self, device: str) -> None:
         """Delete rows older than the configured retention window (if any)."""
         if self._conn is None or not self._config.retention_days:

@@ -12,12 +12,13 @@ from pathlib import Path
 
 import structlog
 
-from . import delta3
+from . import delta3, pricing, settings_store
 from .autoshutdown import AutoShutdownController, ShutdownAction
 from .ble_client import EcoFlowBLE
 from .config import Config, load_config
 from .delta3 import DeviceState
 from .nut_writer import NutWriter
+from .settings_store import SettingsStore
 
 log = structlog.get_logger(__name__)
 
@@ -80,6 +81,9 @@ class Daemon:
 
     def __init__(self, config: Config) -> None:
         self._config = config
+        # Overlay any persisted live-edited settings before building subsystems.
+        self._settings = SettingsStore(config.settings_file)
+        self._settings.load_into(config)
         self._writer = NutWriter(config.nut)
         self._stop = asyncio.Event()
         self._last_write_monotonic = time.monotonic()
@@ -199,7 +203,9 @@ class Daemon:
                 control=self.control_output,
                 history=self._web_history,
                 autoshutdown_status=self._autoshutdown_status,
-                set_autoshutdown=self._set_autoshutdown,
+                get_settings=self._get_settings,
+                update_settings=self._update_settings,
+                energy=self._web_energy,
                 history_enabled=self._store is not None,
             )
             await web.start()
@@ -251,6 +257,39 @@ class Daemon:
             self._config.nut.device_name, minutes
         )
 
+    async def _web_energy(self, minutes: int) -> dict[str, object]:
+        """Energy + HC/HP cost summary over the last ``minutes`` for the UI."""
+        if self._store is None:
+            return {"enabled": False}
+        minutes = max(1, int(minutes))
+        # ~one bucket per minute, capped so very long ranges stay cheap.
+        bucket_seconds = max(60, (minutes * 60) // 2000 * 1 or 60)
+        series = await self._store.energy_series(  # type: ignore[attr-defined]
+            self._config.nut.device_name, minutes, bucket_seconds
+        )
+        summary = pricing.compute_energy(series, bucket_seconds, self._config.pricing)
+        summary["enabled"] = True
+        summary["minutes"] = minutes
+        return summary
+
+    def _get_settings(self) -> dict[str, object]:
+        """Editable-settings schema + current values for the UI form."""
+        return {
+            "fields": settings_store.schema(),
+            "values": settings_store.current_values(self._config),
+        }
+
+    async def _update_settings(self, updates: dict[str, object]) -> dict[str, object]:
+        """Validate + apply edited settings live, persist, and echo new values."""
+        changed = settings_store.apply_updates(self._config, updates)  # raises ValueError
+        if any(k.startswith("auto_shutdown.") for k in changed):
+            # Rebuild the controller so the new policy (and its reset state) applies.
+            self._autoshutdown = AutoShutdownController(self._config.auto_shutdown)
+        if changed:
+            self._settings.save(self._config)
+            log.info("settings.updated", keys=changed)
+        return {"values": settings_store.current_values(self._config), "changed": changed}
+
     def _autoshutdown_status(self) -> dict[str, object]:
         cfg = self._config.auto_shutdown
         return {
@@ -263,12 +302,6 @@ class Daemon:
             "grace_period_seconds": cfg.grace_period_seconds,
             "cut_outputs": self._cut_outputs(),
         }
-
-    async def _set_autoshutdown(self, enabled: bool) -> None:
-        """Enable/disable the auto-shutdown policy live (resets its state)."""
-        self._config.auto_shutdown.enabled = enabled
-        self._autoshutdown = AutoShutdownController(self._config.auto_shutdown)
-        log.warning("auto_shutdown.toggled", enabled=enabled)
 
     async def control_output(self, kind: str, enabled: bool) -> str:
         """Send an output toggle over the live BLE connection. Raises on failure."""
@@ -342,12 +375,12 @@ class Daemon:
             return f"error: {exc}"
 
     async def _poll_loop(self, client: EcoFlowBLE) -> None:
-        interval = self._config.ecoflow.poll_interval_seconds
         while not self._stop.is_set():
             if not client.is_connected:
                 log.warning("daemon.poll_lost_connection")
                 return
-            await self._sleep_or_stop(interval)
+            # Re-read each cycle so a live poll-interval edit takes effect.
+            await self._sleep_or_stop(self._config.ecoflow.poll_interval_seconds)
 
     def _on_state(self, state: DeviceState) -> None:
         if not state.is_complete:

@@ -34,7 +34,9 @@ StateProvider = Callable[[], dict[str, Any]]
 ControlFn = Callable[[str, bool], Awaitable[str]]
 HistoryFn = Callable[[int], Awaitable[list[dict[str, Any]]]]
 AutoStatusFn = Callable[[], dict[str, Any]]
-AutoSetFn = Callable[[bool], Awaitable[None]]
+GetSettingsFn = Callable[[], dict[str, Any]]
+UpdateSettingsFn = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
+EnergyFn = Callable[[int], Awaitable[dict[str, Any]]]
 
 _VALID_OUTPUTS = ("ac", "usb", "dc")
 
@@ -50,7 +52,9 @@ class WebServer:
         control: ControlFn,
         history: HistoryFn,
         autoshutdown_status: AutoStatusFn,
-        set_autoshutdown: AutoSetFn,
+        get_settings: GetSettingsFn,
+        update_settings: UpdateSettingsFn,
+        energy: EnergyFn,
         history_enabled: bool = False,
     ) -> None:
         self._config = config
@@ -58,7 +62,9 @@ class WebServer:
         self._control = control
         self._history = history
         self._autoshutdown_status = autoshutdown_status
-        self._set_autoshutdown = set_autoshutdown
+        self._get_settings = get_settings
+        self._update_settings = update_settings
+        self._energy = energy
         self._history_enabled = history_enabled
         self._runner: web.AppRunner | None = None
 
@@ -73,8 +79,10 @@ class WebServer:
                 web.get("/", self._handle_index),
                 web.get("/api/state", self._handle_state),
                 web.get("/api/history", self._handle_history),
+                web.get("/api/energy", self._handle_energy),
                 web.get("/api/autoshutdown", self._handle_autoshutdown_get),
-                web.post("/api/autoshutdown", self._handle_autoshutdown_set),
+                web.get("/api/settings", self._handle_settings_get),
+                web.post("/api/settings", self._handle_settings_set),
                 web.post("/api/control", self._handle_control),
             ]
         )
@@ -162,22 +170,44 @@ class WebServer:
         points = await self._history(minutes)
         return web.json_response({"enabled": True, "minutes": minutes, "points": points})
 
+    async def _handle_energy(self, request: web.Request) -> web.Response:
+        from aiohttp import web
+
+        self._require_read_auth(request)
+        if not self._history_enabled:
+            return web.json_response({"enabled": False})
+        try:
+            minutes = int(request.query.get("minutes", "1440"))
+        except ValueError:
+            raise web.HTTPBadRequest(reason="minutes must be an integer") from None
+        minutes = max(1, min(minutes, 60 * 24 * 30))
+        return web.json_response(await self._energy(minutes))
+
     async def _handle_autoshutdown_get(self, request: web.Request) -> web.Response:
         from aiohttp import web
 
         self._require_read_auth(request)
         return web.json_response(self._autoshutdown_status())
 
-    async def _handle_autoshutdown_set(self, request: web.Request) -> web.Response:
+    async def _handle_settings_get(self, request: web.Request) -> web.Response:
+        from aiohttp import web
+
+        self._require_read_auth(request)
+        return web.json_response(self._get_settings())
+
+    async def _handle_settings_set(self, request: web.Request) -> web.Response:
         from aiohttp import web
 
         self._require_control_auth(request)
         body = await _json_body(request)
-        if "enabled" not in body or not isinstance(body["enabled"], bool):
-            raise web.HTTPBadRequest(reason='body must be {"enabled": bool}')
-        await self._set_autoshutdown(body["enabled"])
-        log.info("web.autoshutdown_set", enabled=body["enabled"])
-        return web.json_response(self._autoshutdown_status())
+        updates = body.get("updates", body)
+        if not isinstance(updates, dict) or not updates:
+            raise web.HTTPBadRequest(reason="body must be a non-empty object of edits")
+        try:
+            result = await self._update_settings(updates)
+        except ValueError as exc:
+            raise web.HTTPBadRequest(reason=str(exc)) from exc
+        return web.json_response(result)
 
     async def _handle_control(self, request: web.Request) -> web.Response:
         from aiohttp import web
@@ -237,9 +267,11 @@ _INDEX_HTML = """<!doctype html>
   .metric .label { font-size:.72rem; text-transform:uppercase; letter-spacing:.04em; color:#8a93a6; }
   .metric .value { font-size:1.6rem; font-weight:600; margin-top:.2rem; }
   .metric .unit { font-size:.85rem; color:#8a93a6; margin-left:.2rem; font-weight:400; }
+  .metric.sm .value { font-size:1.25rem; }
   .soc-bar { height:8px; border-radius:999px; background:#222631; margin-top:.5rem; overflow:hidden; }
   .soc-fill { height:100%; background:linear-gradient(90deg,#3a8f5c,#7ee2a8); transition:width .4s; }
-  h2 { font-size:.85rem; text-transform:uppercase; letter-spacing:.04em; color:#8a93a6; margin:0 0 .75rem; }
+  h2 { font-size:.85rem; text-transform:uppercase; letter-spacing:.04em; color:#8a93a6; margin:0 0 .75rem;
+       display:flex; align-items:center; gap:.5rem; }
   .controls { display:flex; flex-wrap:wrap; gap:.75rem; }
   .ctl { flex:1; min-width:140px; display:flex; align-items:center; justify-content:space-between;
          gap:.5rem; padding:.6rem .8rem; background:#1b1f2b; border-radius:10px; }
@@ -252,18 +284,35 @@ _INDEX_HTML = """<!doctype html>
   .range { display:flex; gap:.4rem; margin-bottom:.75rem; flex-wrap:wrap; }
   .range button { background:#1b1f2b; font-size:.8rem; padding:.3rem .7rem; }
   .range button.active { background:#2d3957; color:#a9c2ff; }
-  canvas { width:100%; height:220px; display:block; }
+  .chart-wrap { position:relative; }
+  canvas { width:100%; height:220px; display:block; cursor:crosshair; }
+  #tip { position:absolute; pointer-events:none; display:none; background:#0b0d12;
+         border:1px solid #2a2f3c; border-radius:8px; padding:.5rem .6rem; font-size:.78rem;
+         white-space:nowrap; box-shadow:0 4px 14px rgba(0,0,0,.4); z-index:5; }
+  #tip b { color:#e6e6e6; } #tip .t { color:#8a93a6; margin-bottom:.25rem; }
+  #tip i { font-style:normal; display:inline-block; width:9px; height:9px; border-radius:2px;
+           margin-right:.35rem; vertical-align:middle; }
   .legend { display:flex; gap:1rem; flex-wrap:wrap; font-size:.78rem; color:#8a93a6; margin-top:.5rem; }
   .legend span::before { content:""; display:inline-block; width:10px; height:10px; border-radius:2px;
                          margin-right:.3rem; vertical-align:middle; background:var(--c); }
   .muted { color:#8a93a6; font-size:.85rem; }
   #toast { position:fixed; bottom:1rem; left:50%; transform:translateX(-50%);
            background:#2a2f3c; padding:.6rem 1rem; border-radius:8px; opacity:0;
-           transition:opacity .3s; pointer-events:none; }
+           transition:opacity .3s; pointer-events:none; max-width:90vw; z-index:10; }
   #toast.show { opacity:1; }
   .token-row { display:flex; gap:.5rem; align-items:center; margin-top:.5rem; }
   .token-row input { flex:1; background:#0f1115; border:1px solid #2a2f3c; color:#e6e6e6;
                      border-radius:8px; padding:.45rem .6rem; }
+  fieldset { border:1px solid #222631; border-radius:10px; margin:0 0 1rem; padding:.75rem 1rem 1rem; }
+  legend { color:#a9c2ff; font-size:.78rem; text-transform:uppercase; letter-spacing:.04em; padding:0 .4rem; }
+  .frow { display:flex; align-items:center; gap:.6rem; padding:.3rem 0; }
+  .frow label { flex:1; min-width:0; }
+  .frow .help { display:block; font-size:.74rem; color:#8a93a6; }
+  .frow input[type=number], .frow input[type=text], .frow input[type=time] {
+    width:130px; background:#0f1115; border:1px solid #2a2f3c; color:#e6e6e6;
+    border-radius:8px; padding:.35rem .5rem; }
+  .frow input[type=checkbox] { width:18px; height:18px; }
+  .save-row { display:flex; gap:.6rem; align-items:center; }
 </style>
 </head>
 <body>
@@ -310,6 +359,46 @@ _INDEX_HTML = """<!doctype html>
     </div>
   </section>
 
+  <section class="card" id="energyCard">
+    <h2>Energy &amp; cost <span id="energyRange" class="muted" style="text-transform:none"></span></h2>
+    <div class="grid">
+      <div class="metric"><div class="label">Grid energy</div>
+        <div class="value"><span id="eKwh">–</span><span class="unit">kWh</span></div></div>
+      <div class="metric"><div class="label">Total cost</div>
+        <div class="value"><span id="eCost">–</span></div></div>
+      <div class="metric sm"><div class="label">Heures Creuses</div>
+        <div class="value"><span id="eHc">–</span></div></div>
+      <div class="metric sm"><div class="label">Heures Pleines</div>
+        <div class="value"><span id="eHp">–</span></div></div>
+      <div class="metric sm"><div class="label">Avg / peak draw</div>
+        <div class="value"><span id="eAvg">–</span></div></div>
+      <div class="metric sm"><div class="label">Projected</div>
+        <div class="value"><span id="eProj">–</span></div></div>
+    </div>
+    <div id="energyNote" class="muted" style="margin-top:.5rem"></div>
+  </section>
+
+  <section class="card" id="historyCard">
+    <h2>History</h2>
+    <div class="range">
+      <button data-min="60">1h</button>
+      <button data-min="360">6h</button>
+      <button data-min="1440" class="active">24h</button>
+      <button data-min="10080">7d</button>
+      <button data-min="43200">30d</button>
+    </div>
+    <div class="chart-wrap">
+      <canvas id="chart" width="940" height="220"></canvas>
+      <div id="tip"></div>
+    </div>
+    <div class="legend">
+      <span style="--c:#7ee2a8">SoC %</span>
+      <span style="--c:#f2c969">AC out W</span>
+      <span style="--c:#a9c2ff">AC in W</span>
+    </div>
+    <div id="historyNote" class="muted"></div>
+  </section>
+
   <section class="card">
     <h2>Auto-shutdown</h2>
     <div class="ctl">
@@ -320,21 +409,13 @@ _INDEX_HTML = """<!doctype html>
     <div id="asDetail" class="muted" style="margin-top:.6rem"></div>
   </section>
 
-  <section class="card" id="historyCard">
-    <h2>History</h2>
-    <div class="range">
-      <button data-min="60">1h</button>
-      <button data-min="360">6h</button>
-      <button data-min="1440" class="active">24h</button>
-      <button data-min="10080">7d</button>
+  <section class="card" id="settingsCard">
+    <h2>Settings</h2>
+    <div id="settingsForm"></div>
+    <div class="save-row">
+      <button id="saveSettings">Save settings</button>
+      <span id="settingsNote" class="muted"></span>
     </div>
-    <canvas id="chart" width="940" height="220"></canvas>
-    <div class="legend">
-      <span style="--c:#7ee2a8">SoC %</span>
-      <span style="--c:#f2c969">AC out W</span>
-      <span style="--c:#a9c2ff">AC in W</span>
-    </div>
-    <div id="historyNote" class="muted"></div>
   </section>
 </main>
 <div id="toast"></div>
@@ -345,12 +426,15 @@ let token = localStorage.getItem("ecoflow_token") || "";
 let historyMinutes = 1440;
 let controlEnabled = false;
 let historyEnabled = false;
+let currency = "€";
+let lastPoints = [];
+let hoverIndex = null;
 
 function authHeaders() { return token ? { "X-Auth-Token": token } : {}; }
 
 function toast(msg) {
   const t = $("#toast"); t.textContent = msg; t.classList.add("show");
-  setTimeout(() => t.classList.remove("show"), 2500);
+  setTimeout(() => t.classList.remove("show"), 2800);
 }
 
 function fmtMins(m) {
@@ -364,6 +448,7 @@ function fmtRuntime(s) {
   const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
   return h ? `${h}h ${m}m` : `${m}m`;
 }
+function money(v) { return currency + (v ?? 0).toFixed(2); }
 
 async function refreshState() {
   try {
@@ -389,6 +474,7 @@ async function refreshState() {
       (s.status?.includes("LB") ? "status-LB" : s.status?.startsWith("OL") ? "status-OL" : "status-OB");
     applyControlState();
     $("#historyCard").style.display = historyEnabled ? "" : "none";
+    $("#energyCard").style.display = historyEnabled ? "" : "none";
   } catch (e) {
     $("#status").textContent = "offline";
     $("#status").className = "status-pill";
@@ -397,8 +483,10 @@ async function refreshState() {
 
 function applyControlState() {
   const need = controlEnabled && !token;
-  document.querySelectorAll("[data-out]").forEach(b => b.disabled = !controlEnabled || need);
-  $("#asOn").disabled = $("#asOff").disabled = !controlEnabled || need;
+  const lock = !controlEnabled || need;
+  document.querySelectorAll("[data-out]").forEach(b => b.disabled = lock);
+  $("#asOn").disabled = $("#asOff").disabled = lock;
+  $("#saveSettings").disabled = lock;
   $("#tokenRow").style.display = controlEnabled ? "flex" : "none";
   $("#controlNote").textContent = !controlEnabled
     ? "Controls disabled (no auth_token configured on the bridge)."
@@ -406,6 +494,16 @@ function applyControlState() {
 }
 
 async function control(output, enabled) {
+  // Guard: turning USB off can kill a Pi powered from the DELTA 3's USB port.
+  if (output === "usb" && !enabled) {
+    if (!confirm(
+      "Turn the USB output OFF?\\n\\n" +
+      "If this bridge (e.g. a Raspberry Pi) is powered from the DELTA 3's USB " +
+      "port, this cuts its OWN power — the dashboard and the bridge will go down.\\n\\n" +
+      "Continue only if you are sure nothing critical runs off USB.")) {
+      return;
+    }
+  }
   try {
     const r = await fetch("api/control", {
       method: "POST",
@@ -434,87 +532,214 @@ async function refreshAuto() {
   } catch (e) {}
 }
 
+// Enable/disable auto-shutdown via the settings endpoint (auto_shutdown.enabled).
 async function setAuto(enabled) {
-  try {
-    const r = await fetch("api/autoshutdown", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders() },
-      body: JSON.stringify({ enabled }),
-    });
-    const d = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(d.reason || r.statusText);
-    toast("auto-shutdown " + (enabled ? "enabled" : "disabled"));
-    refreshAuto();
-  } catch (e) { toast("error: " + e.message); }
+  const ok = await saveSettings({ "auto_shutdown.enabled": enabled }, true);
+  if (ok) { toast("auto-shutdown " + (enabled ? "enabled" : "disabled")); refreshAuto(); }
 }
 
-function drawChart(points) {
+// ---- chart with hover tooltip ----
+const SERIES = [
+  { key: "soc_percent", color: "#7ee2a8", max: 100, label: "SoC", unit: "%" },
+  { key: "ac_output_watts", color: "#f2c969", max: null, label: "AC out", unit: "W" },
+  { key: "ac_input_watts", color: "#a9c2ff", max: null, label: "AC in", unit: "W" },
+];
+const PAD = 28;
+function xAt(i, n, W) { return PAD + (n < 2 ? 0 : (i / (n - 1)) * (W - 2 * PAD)); }
+function wattMax(points) {
+  let m = 100;
+  for (const p of points) m = Math.max(m, p.ac_output_watts || 0, p.ac_input_watts || 0);
+  return m;
+}
+function drawChart() {
   const c = $("#chart"), ctx = c.getContext("2d");
-  const W = c.width, H = c.height, pad = 28;
+  const W = c.width, H = c.height, points = lastPoints;
   ctx.clearRect(0, 0, W, H);
   if (!points.length) {
     ctx.fillStyle = "#8a93a6"; ctx.font = "13px system-ui";
-    ctx.fillText("no data yet", pad, H / 2); return;
+    ctx.fillText("no data yet", PAD, H / 2); return;
   }
-  const xs = points.map((_, i) => i);
-  const series = [
-    { key: "soc_percent", color: "#7ee2a8", max: 100 },
-    { key: "ac_output_watts", color: "#f2c969", max: null },
-    { key: "ac_input_watts", color: "#a9c2ff", max: null },
-  ];
-  let wMax = 100;
-  for (const p of points)
-    wMax = Math.max(wMax, p.ac_output_watts || 0, p.ac_input_watts || 0);
+  const wMax = wattMax(points), n = points.length;
   ctx.strokeStyle = "#222631"; ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(pad, H - pad); ctx.lineTo(W - pad, H - pad); ctx.stroke();
-  const xAt = i => pad + (xs.length < 2 ? 0 : (i / (xs.length - 1)) * (W - 2 * pad));
-  for (const s of series) {
+  ctx.beginPath(); ctx.moveTo(PAD, H - PAD); ctx.lineTo(W - PAD, H - PAD); ctx.stroke();
+  for (const s of SERIES) {
     const max = s.max || wMax;
     ctx.strokeStyle = s.color; ctx.lineWidth = 1.8; ctx.beginPath();
     let started = false;
     points.forEach((p, i) => {
-      const v = p[s.key];
-      if (v == null) return;
-      const y = H - pad - (v / max) * (H - 2 * pad);
-      if (!started) { ctx.moveTo(xAt(i), y); started = true; }
-      else ctx.lineTo(xAt(i), y);
+      const v = p[s.key]; if (v == null) return;
+      const y = H - PAD - (v / max) * (H - 2 * PAD);
+      if (!started) { ctx.moveTo(xAt(i, n, W), y); started = true; }
+      else ctx.lineTo(xAt(i, n, W), y);
     });
     ctx.stroke();
   }
+  if (hoverIndex != null && hoverIndex < n) {
+    const x = xAt(hoverIndex, n, W);
+    ctx.strokeStyle = "#3a4356"; ctx.lineWidth = 1; ctx.beginPath();
+    ctx.moveTo(x, PAD - 8); ctx.lineTo(x, H - PAD); ctx.stroke();
+    const p = points[hoverIndex];
+    for (const s of SERIES) {
+      const v = p[s.key]; if (v == null) continue;
+      const max = s.max || wMax, y = H - PAD - (v / max) * (H - 2 * PAD);
+      ctx.fillStyle = s.color; ctx.beginPath(); ctx.arc(x, y, 3, 0, 7); ctx.fill();
+    }
+  }
 }
+function showTip(p, clientX) {
+  const tip = $("#tip"), wrap = $(".chart-wrap").getBoundingClientRect();
+  const when = new Date(p.ts).toLocaleString();
+  let rows = `<div class="t">${when}</div>`;
+  for (const s of SERIES) {
+    const v = p[s.key];
+    rows += `<div><i style="background:${s.color}"></i>${s.label}: ` +
+            `<b>${v == null ? "–" : Math.round(v) + s.unit}</b></div>`;
+  }
+  tip.innerHTML = rows; tip.style.display = "block";
+  let left = clientX - wrap.left + 12;
+  if (left + tip.offsetWidth > wrap.width) left = clientX - wrap.left - tip.offsetWidth - 12;
+  tip.style.left = Math.max(0, left) + "px"; tip.style.top = "6px";
+}
+function onMove(e) {
+  const c = $("#chart"), rect = c.getBoundingClientRect(), n = lastPoints.length;
+  if (!n) return;
+  const xCanvas = (e.clientX - rect.left) * (c.width / rect.width);
+  let i = Math.round((xCanvas - PAD) / ((c.width - 2 * PAD) || 1) * (n - 1));
+  i = Math.max(0, Math.min(n - 1, i));
+  hoverIndex = i; drawChart(); showTip(lastPoints[i], e.clientX);
+}
+function onLeave() { hoverIndex = null; drawChart(); $("#tip").style.display = "none"; }
 
 async function refreshHistory() {
   if (!historyEnabled) return;
   try {
     const r = await fetch("api/history?minutes=" + historyMinutes, { headers: authHeaders() });
     const d = await r.json();
-    drawChart(d.points || []);
-    $("#historyNote").textContent = (d.points || []).length
-      ? `${d.points.length} buckets over last ${fmtMins(historyMinutes)}`
-      : "Collecting data… (Postgres logging on)";
+    lastPoints = d.points || []; hoverIndex = null; drawChart();
+    $("#historyNote").textContent = lastPoints.length
+      ? `${lastPoints.length} points · hover for detail`
+      : "Collecting data…";
   } catch (e) { $("#historyNote").textContent = "history unavailable"; }
+}
+
+async function refreshEnergy() {
+  if (!historyEnabled) return;
+  try {
+    const r = await fetch("api/energy?minutes=" + historyMinutes, { headers: authHeaders() });
+    const d = await r.json();
+    if (d.currency) currency = d.currency;
+    $("#energyRange").textContent = "· last " + fmtMins(historyMinutes);
+    $("#eKwh").textContent = (d.grid_kwh ?? 0).toFixed(2);
+    $("#eCost").textContent = d.pricing_enabled ? money(d.total_cost) : "—";
+    $("#eHc").innerHTML = `${(d.hc_kwh ?? 0).toFixed(2)} kWh` +
+      (d.pricing_enabled ? ` · <b>${money(d.hc_cost)}</b>` : "");
+    $("#eHp").innerHTML = `${(d.hp_kwh ?? 0).toFixed(2)} kWh` +
+      (d.pricing_enabled ? ` · <b>${money(d.hp_cost)}</b>` : "");
+    $("#eAvg").textContent = `${Math.round(d.avg_grid_watts ?? 0)} / ${Math.round(d.peak_grid_watts ?? 0)} W`;
+    $("#eProj").innerHTML = d.pricing_enabled
+      ? `${money(d.cost_per_day)}/day · <b>${money(d.cost_per_month)}/mo</b>` : "—";
+    $("#energyNote").textContent = d.pricing_enabled
+      ? `Grid draw priced by HC window ${d.hc_window}. Load delivered: ${(d.load_kwh ?? 0).toFixed(2)} kWh.`
+      : "Enable pricing in Settings to see cost. Load delivered: " + (d.load_kwh ?? 0).toFixed(2) + " kWh.";
+  } catch (e) { $("#energyNote").textContent = "energy unavailable"; }
+}
+
+// ---- settings form ----
+const inputId = k => "set_" + k.replace(/[^a-z0-9]/gi, "_");
+function fieldInput(f, value) {
+  const id = inputId(f.key);
+  if (f.type === "bool")
+    return `<input type="checkbox" id="${id}" data-key="${f.key}" ${value ? "checked" : ""}>`;
+  if (f.type === "time")
+    return `<input type="time" id="${id}" data-key="${f.key}" value="${value ?? ""}">`;
+  if (f.type === "str")
+    return `<input type="text" id="${id}" data-key="${f.key}" value="${value ?? ""}">`;
+  const step = f.step != null ? `step="${f.step}"` : "";
+  const mn = f.min != null ? `min="${f.min}"` : "", mx = f.max != null ? `max="${f.max}"` : "";
+  return `<input type="number" id="${id}" data-key="${f.key}" data-type="${f.type}" ` +
+         `${step} ${mn} ${mx} value="${value ?? ""}">`;
+}
+function renderSettings(schema, values) {
+  const groups = {};
+  for (const f of schema) (groups[f.group] = groups[f.group] || []).push(f);
+  let html = "";
+  for (const [group, fields] of Object.entries(groups)) {
+    html += `<fieldset><legend>${group}</legend>`;
+    for (const f of fields) {
+      html += `<div class="frow"><label for="${inputId(f.key)}">${f.label}` +
+              (f.help ? `<span class="help">${f.help}</span>` : "") + `</label>` +
+              fieldInput(f, values[f.key]) + `</div>`;
+    }
+    html += `</fieldset>`;
+  }
+  $("#settingsForm").innerHTML = html;
+}
+async function loadSettings() {
+  try {
+    const r = await fetch("api/settings", { headers: authHeaders() });
+    if (!r.ok) return;
+    const d = await r.json();
+    renderSettings(d.fields, d.values);
+    applyControlState();
+  } catch (e) {}
+}
+function collectSettings() {
+  const out = {};
+  document.querySelectorAll("#settingsForm [data-key]").forEach(el => {
+    const k = el.dataset.key;
+    if (el.type === "checkbox") out[k] = el.checked;
+    else if (el.type === "number") {
+      if (el.value === "") out[k] = (el.dataset.type === "float_or_null") ? null : 0;
+      else out[k] = Number(el.value);
+    } else out[k] = el.value;
+  });
+  return out;
+}
+async function saveSettings(updates, quiet) {
+  try {
+    const r = await fetch("api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ updates }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.reason || r.statusText);
+    if (!quiet) {
+      $("#settingsNote").textContent = (d.changed || []).length
+        ? `saved ${d.changed.length} change(s)` : "no changes";
+      refreshEnergy();
+    }
+    return true;
+  } catch (e) { if (!quiet) $("#settingsNote").textContent = "error: " + e.message;
+                else toast("error: " + e.message); return false; }
 }
 
 document.querySelectorAll("[data-out]").forEach(b =>
   b.addEventListener("click", () => control(b.dataset.out, b.dataset.on === "1")));
 $("#asOn").addEventListener("click", () => setAuto(true));
 $("#asOff").addEventListener("click", () => setAuto(false));
+$("#saveSettings").addEventListener("click", () => saveSettings(collectSettings(), false));
 $("#saveToken").addEventListener("click", () => {
   token = $("#token").value.trim();
   localStorage.setItem("ecoflow_token", token);
-  toast("token saved"); applyControlState(); refreshState();
+  toast("token saved"); applyControlState(); refreshState(); loadSettings();
 });
 document.querySelectorAll(".range button").forEach(b =>
   b.addEventListener("click", () => {
     document.querySelectorAll(".range button").forEach(x => x.classList.remove("active"));
-    b.classList.add("active"); historyMinutes = +b.dataset.min; refreshHistory();
+    b.classList.add("active"); historyMinutes = +b.dataset.min;
+    refreshHistory(); refreshEnergy();
   }));
+const chart = $("#chart");
+chart.addEventListener("mousemove", onMove);
+chart.addEventListener("mouseleave", onLeave);
 
 $("#token").value = token;
-refreshState(); refreshAuto(); refreshHistory();
+refreshState(); refreshAuto(); refreshHistory(); refreshEnergy(); loadSettings();
 setInterval(refreshState, 4000);
 setInterval(refreshAuto, 8000);
-setInterval(refreshHistory, 30000);
+setInterval(() => { if (hoverIndex == null) refreshHistory(); }, 30000);
+setInterval(refreshEnergy, 60000);
 </script>
 </body>
 </html>

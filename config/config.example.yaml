@@ -92,6 +92,21 @@ postgres:
   min_interval_seconds: 0   # min seconds between persisted rows (0 = every frame)
   retention_days: 0         # auto-prune rows older than this (0 = keep forever)
 
+# Electricity pricing for the web UI's cost estimate. Heures Creuses (off-peak)
+# vs Heures Pleines (peak). Cost is metered against AC INPUT (grid draw). All of
+# these are also editable live from the web UI's Settings panel (and persisted).
+pricing:
+  enabled: false            # show cost figures in the dashboard
+  currency: "€"
+  hc_start: "22:00"         # off-peak window start (may wrap midnight)
+  hc_end: "06:00"           # off-peak window end; all other hours are HP
+  price_hc: 0.0             # off-peak price per kWh
+  price_hp: 0.0             # peak price per kWh
+
+# Where the web UI persists live-edited settings (overlaid on this file at
+# startup). Lives in the systemd StateDirectory so it survives restarts.
+settings_file: "/var/lib/ecoflow-nut/settings.json"
+
 # Optional auto-shutdown: cut the DELTA 3's output when the battery is critically
 # low while on battery. DISABLED by default -- cutting output is destructive.
 # The grace period lets NUT clients (Unraid/Synology) finish their own shutdown,

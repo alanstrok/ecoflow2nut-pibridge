@@ -273,6 +273,25 @@ charge/discharge estimates (auto-refreshing), with on/off buttons for **AC**,
 The published Docker image already includes the web + Postgres extras; just set
 `web.enabled: true` and expose port 8080.
 
+It also provides:
+
+* **Live settings editing** — a Settings panel edits "runtime-safe" config from
+  the browser: the full auto-shutdown policy (trigger/recover SoC %, grace
+  periods, min-load watts, which outputs to cut, restore-on-recovery), NUT
+  thresholds (low/warning %, runtime-low, AC-present watts, transfer points),
+  poll interval, battery capacity / nominal power, and the electricity pricing.
+  Changes apply **immediately** (no restart) and persist to `settings_file`
+  (`/var/lib/ecoflow-nut/settings.json`), which is overlaid back onto the YAML
+  at the next startup. Edits require the control token.
+* **USB-off guard** — turning the USB output off pops a confirmation, since the
+  bridge host (a Pi) is often powered from the DELTA 3's USB port.
+* **Hover detail** — the history chart shows the exact SoC / AC-in / AC-out
+  values (and local time) at the point under your cursor.
+* **Energy & cost** — when history logging is on, an Energy panel reports grid
+  energy (kWh), the **Heures Creuses / Heures Pleines** split and cost, average
+  and peak draw, and a projected €/day and €/month — so you can see what your
+  network stack and server cost to run. See [Pricing](#electricity-pricing).
+
 **Auth.** Control actions (port toggles, auto-shutdown) require `auth_token` —
 sent as an `X-Auth-Token` header, `Authorization: Bearer`, or `?token=`. The
 browser prompts for it and stores it locally. If no token is configured the
@@ -328,6 +347,27 @@ ECOFLOW_PG_DSN=postgresql://ecoflow:secret@db-host:5432/ecoflow \
 The table is created automatically on first connect (Postgres 14+; tested
 against **Postgres 17**). See [`docker-compose.example.yml`](docker-compose.example.yml)
 for a bridge + Postgres 17 stack.
+
+#### Electricity pricing
+
+With history logging enabled, the dashboard's Energy panel estimates running
+cost from a time-of-use tariff. Cost is metered against **AC input (grid draw)**
+— the energy actually pulled from the wall, including battery-charging losses.
+
+```yaml
+pricing:
+  enabled: true
+  currency: "€"
+  hc_start: "22:00"   # Heures Creuses (off-peak) window start — may wrap midnight
+  hc_end: "06:00"     # all other hours are Heures Pleines (peak)
+  price_hc: 0.18      # off-peak €/kWh
+  price_hp: 0.27      # peak €/kWh
+```
+
+Each logged sample is classified HC/HP by its **local** time-of-day, integrated
+to kWh, and priced. The panel shows the HC/HP split, total cost, average/peak
+draw and a projected €/day and €/month over the selected range. All of these
+values are also editable live from the web UI's Settings panel.
 
 ## 7. NUT client setup
 
