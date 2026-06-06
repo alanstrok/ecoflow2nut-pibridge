@@ -156,6 +156,25 @@ class EveOutletConfig:
 
 
 @dataclass(slots=True)
+class SwitchBotConfig:
+    """Manual control of a SwitchBot Bot (mechanical button pusher) over BLE.
+
+    A convenience to physically press the server's power button from the CLI or
+    web dashboard -- e.g. to boot a machine that doesn't auto-power-on. Plain BLE
+    GATT, no pairing. Disabled by default; it is *not* wired into auto-shutdown
+    (a power button is a toggle, so an automated press could shut down a server
+    that has already auto-booted). Password-protected Bots are not supported.
+    """
+
+    enabled: bool = False
+    # BLE MAC of the Bot (find it with 'ecoflow-nut switchbot scan').
+    mac: str = ""
+    # Bluetooth adapter (shares the DELTA 3 radio by default; on-demand connect).
+    adapter: str = "hci0"
+    connect_timeout_seconds: int = 20
+
+
+@dataclass(slots=True)
 class PostgresConfig:
     """Optional Postgres telemetry logging.
 
@@ -218,6 +237,7 @@ class Config:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     auto_shutdown: AutoShutdownConfig = field(default_factory=AutoShutdownConfig)
     eve: EveOutletConfig = field(default_factory=EveOutletConfig)
+    switchbot: SwitchBotConfig = field(default_factory=SwitchBotConfig)
     web: WebConfig = field(default_factory=WebConfig)
     postgres: PostgresConfig = field(default_factory=PostgresConfig)
     sqlite: SqliteConfig = field(default_factory=SqliteConfig)
@@ -263,6 +283,7 @@ def load_config(path: str | Path) -> Config:
         **_filter(AutoShutdownConfig, raw.get("auto_shutdown", {}))
     )
     eve = EveOutletConfig(**_filter(EveOutletConfig, raw.get("eve", {})))
+    switchbot = SwitchBotConfig(**_filter(SwitchBotConfig, raw.get("switchbot", {})))
 
     web = WebConfig(**_filter(WebConfig, raw.get("web", {})))
     # Secrets may be supplied via the environment instead of the YAML file.
@@ -281,6 +302,7 @@ def load_config(path: str | Path) -> Config:
         logging=logging_cfg,
         auto_shutdown=auto_shutdown,
         eve=eve,
+        switchbot=switchbot,
         web=web,
         postgres=postgres,
         sqlite=sqlite,

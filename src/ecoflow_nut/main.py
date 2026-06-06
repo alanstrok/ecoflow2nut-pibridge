@@ -20,6 +20,7 @@ from .delta3 import DeviceState
 from .eve_outlet import EveOutlet
 from .nut_writer import NutWriter
 from .settings_store import SettingsStore
+from .switchbot import SwitchBot
 
 log = structlog.get_logger(__name__)
 
@@ -97,6 +98,10 @@ class Daemon:
         # Last on/off state we commanded the Eve outlet into (the outlet is not
         # polled to avoid extra BLE traffic; None == unknown until first command).
         self._eve_state: bool | None = None
+        # Optional SwitchBot Bot (manual server power-button presser).
+        self._switchbot: SwitchBot | None = (
+            SwitchBot(config.switchbot) if config.switchbot.enabled else None
+        )
         # One-shot startup reconciliation of the auto-shutdown cut state.
         self._reconciled = False
         # Latest published telemetry, surfaced to the optional web UI / DB logger.
@@ -218,6 +223,9 @@ class Daemon:
                 energy=self._web_energy,
                 history_enabled=self._store is not None,
                 eve_control=self.control_eve if self._eve is not None else None,
+                switchbot_press=(
+                    self.control_switchbot if self._switchbot is not None else None
+                ),
             )
             await web.start()
             self._web = web
@@ -246,6 +254,8 @@ class Daemon:
             if self._eve is not None
             else {}
         )
+        if self._switchbot is not None:
+            eve = {**eve, "switchbot_enabled": True}
         if s is None:
             return {
                 "status": self._latest_status,
@@ -343,6 +353,14 @@ class Daemon:
         self._eve_state = enabled
         log.info("control.eve", enabled=enabled)
         return f"eve {'on' if enabled else 'off'}"
+
+    async def control_switchbot(self, action: str = "press") -> str:
+        """Send a one-shot command to the SwitchBot Bot. Raises on failure."""
+        if self._switchbot is None:
+            raise RuntimeError("switchbot is not enabled")
+        message = await self._switchbot.send(action)
+        log.info("control.switchbot", action=action)
+        return message
 
     def _record_sample(self, state: DeviceState, status: str, runtime: int) -> None:
         """Fire-and-forget a Postgres write (errors are swallowed in the store)."""

@@ -33,6 +33,7 @@ log = structlog.get_logger(__name__)
 StateProvider = Callable[[], dict[str, Any]]
 ControlFn = Callable[[str, bool], Awaitable[str]]
 EveControlFn = Callable[[bool], Awaitable[str]]
+SwitchBotFn = Callable[[str], Awaitable[str]]
 HistoryFn = Callable[[int], Awaitable[list[dict[str, Any]]]]
 AutoStatusFn = Callable[[], dict[str, Any]]
 GetSettingsFn = Callable[[], dict[str, Any]]
@@ -58,11 +59,13 @@ class WebServer:
         energy: EnergyFn,
         history_enabled: bool = False,
         eve_control: EveControlFn | None = None,
+        switchbot_press: SwitchBotFn | None = None,
     ) -> None:
         self._config = config
         self._state_provider = state_provider
         self._control = control
         self._eve_control = eve_control
+        self._switchbot_press = switchbot_press
         self._history = history
         self._autoshutdown_status = autoshutdown_status
         self._get_settings = get_settings
@@ -87,6 +90,7 @@ class WebServer:
                 web.get("/api/settings", self._handle_settings_get),
                 web.post("/api/settings", self._handle_settings_set),
                 web.post("/api/control", self._handle_control),
+                web.post("/api/switchbot", self._handle_switchbot),
             ]
         )
         return app
@@ -238,6 +242,23 @@ class WebServer:
         log.info("web.control", output=output, enabled=enabled)
         return web.json_response({"ok": True, "message": message})
 
+    async def _handle_switchbot(self, request: web.Request) -> web.Response:
+        from aiohttp import web
+
+        self._require_control_auth(request)
+        if self._switchbot_press is None:
+            raise web.HTTPBadRequest(reason="switchbot is not enabled")
+        body = await _json_body(request)
+        action = body.get("action", "press")
+        if action not in ("press", "on", "off"):
+            raise web.HTTPBadRequest(reason='action must be "press", "on" or "off"')
+        try:
+            message = await self._switchbot_press(action)
+        except Exception as exc:  # noqa: BLE001 - surface as a 4xx/5xx to the client
+            raise web.HTTPConflict(reason=str(exc)) from exc
+        log.info("web.switchbot", action=action)
+        return web.json_response({"ok": True, "message": message})
+
 
 async def _json_body(request: web.Request) -> dict[str, Any]:
     from aiohttp import web
@@ -382,6 +403,9 @@ _INDEX_HTML = """<!doctype html>
         <span class="pstat" id="stEve"><span class="led unknown"></span>…</span>
         <span><button data-out="eve" data-on="1" class="on">On</button>
         <button data-out="eve" data-on="0" class="off">Off</button></span></div>
+      <div class="ctl" id="sbCtl" style="display:none">
+        <span class="name">Server power <span class="muted" style="text-transform:none">(SwitchBot)</span></span>
+        <span><button id="sbPress" class="on">Press</button></span></div>
     </div>
     <div id="controlNote" class="muted" style="margin-top:.6rem"></div>
     <div class="token-row" id="tokenRow" style="display:none">
@@ -535,6 +559,7 @@ async function refreshState() {
         eveOn === true ? "ON" : eveOn === false ? "OFF" : "?",
         eveOn == null ? "Unknown until first command." : "Last commanded state.");
     }
+    $("#sbCtl").style.display = s.switchbot_enabled === true ? "flex" : "none";
     applyControlState();
     $("#historyCard").style.display = historyEnabled ? "" : "none";
     $("#energyCard").style.display = historyEnabled ? "" : "none";
@@ -549,6 +574,7 @@ function applyControlState() {
   const lock = !controlEnabled || need;
   document.querySelectorAll("[data-out]").forEach(b => b.disabled = lock);
   $("#asOn").disabled = $("#asOff").disabled = lock;
+  $("#sbPress").disabled = lock;
   $("#saveSettings").disabled = lock;
   $("#tokenRow").style.display = controlEnabled ? "flex" : "none";
   $("#controlNote").textContent = !controlEnabled
@@ -577,6 +603,19 @@ async function control(output, enabled) {
     if (!r.ok) throw new Error(d.reason || r.statusText);
     toast(d.message || "ok");
     setTimeout(refreshState, 800);
+  } catch (e) { toast("error: " + e.message); }
+}
+
+async function switchbotPress() {
+  try {
+    const r = await fetch("api/switchbot", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ action: "press" }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.reason || r.statusText);
+    toast(d.message || "pressed");
   } catch (e) { toast("error: " + e.message); }
 }
 
@@ -787,6 +826,7 @@ document.querySelectorAll("[data-out]").forEach(b =>
   b.addEventListener("click", () => control(b.dataset.out, b.dataset.on === "1")));
 $("#asOn").addEventListener("click", () => setAuto(true));
 $("#asOff").addEventListener("click", () => setAuto(false));
+$("#sbPress").addEventListener("click", switchbotPress);
 $("#saveSettings").addEventListener("click", () => saveSettings(collectSettings(), false));
 $("#saveToken").addEventListener("click", () => {
   token = $("#token").value.trim();

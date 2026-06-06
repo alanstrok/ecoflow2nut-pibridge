@@ -192,6 +192,9 @@ Full annotated example: [`config/config.example.yaml`](config/config.example.yam
 | `eve.adapter` | `hci1` | Bluetooth adapter for the outlet — ideally a **separate** dongle from the DELTA 3 |
 | `eve.pairing_file` | `/var/lib/ecoflow-nut/eve-pairing.json` | Where aiohomekit pairing data is persisted |
 | `eve.setup_code` | `""` | 8-digit HomeKit code (e.g. `123-45-678`), needed only to pair |
+| `switchbot.enabled` | `false` | Master switch for the SwitchBot Bot (manual power-button presser) |
+| `switchbot.mac` | `""` | BLE MAC of the Bot (from `switchbot scan`) |
+| `switchbot.adapter` | `hci0` | Bluetooth adapter for the Bot (on-demand connect) |
 
 ### Auto-shutdown
 
@@ -330,6 +333,27 @@ device id is matched case-insensitively, so either case works in the config.
 > comes up on AC but below `recover_soc_percent`, it holds the outlet off until
 > SoC recovers (so the server doesn't boot without a shutdown buffer).
 
+### Server power button (SwitchBot)
+
+Optionally, a **SwitchBot Bot** (the mechanical button pusher) can physically
+press a machine's power button — handy to boot a server that doesn't
+auto-power-on. It's plain BLE (no pairing) and needs no extra dependency:
+
+```bash
+ecoflow-nut switchbot scan         # find the Bot's MAC
+# set switchbot.enabled + switchbot.mac in the config, then:
+ecoflow-nut switchbot press        # momentary press (also: on / off in switch mode)
+```
+
+With `web.enabled` and `switchbot.enabled`, a **Server power** *Press* button
+appears in the dashboard's *Port controls* (control token required). Like the
+Eve outlet it connects on demand (one brief BLE blip per press on a shared
+radio).
+
+It is **manual only** — deliberately *not* wired into auto-shutdown: a power
+button is a toggle, so an automated press could shut down a server that has
+already auto-booted from AC restore. Password-protected Bots are not supported.
+
 ### NUT variable mapping
 
 | NUT variable | Source |
@@ -410,7 +434,8 @@ charge/discharge estimates (auto-refreshing), with on/off buttons for **AC**,
 **USB** and **12V DC**, plus the auto-shutdown state (and a live enable/disable).
 When the [HomeKit outlet](#per-load-shedding-with-a-homekit-outlet) is enabled, a
 fourth **Eve outlet** control appears in the same panel (showing its last
-commanded on/off state). The published Docker image already includes the web +
+commanded on/off state), and a [SwitchBot](#server-power-button-switchbot) **Press**
+button if that's enabled. The published Docker image already includes the web +
 Postgres extras; just set `web.enabled: true` and expose port 8080.
 
 It also provides:

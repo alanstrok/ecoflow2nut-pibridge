@@ -11,6 +11,7 @@ import click
 import structlog
 
 from . import eve_outlet
+from . import switchbot as switchbot_mod
 from .ble_client import EcoFlowBLE
 from .config import Config, load_config
 from .delta3 import DeviceState
@@ -253,6 +254,62 @@ def eve_status(ctx: click.Context) -> None:
     except eve_outlet.EveError as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo("unknown" if value is None else ("on" if value else "off"))
+
+
+@cli.group()
+@click.pass_context
+def switchbot(ctx: click.Context) -> None:  # noqa: D401
+    """Control a SwitchBot Bot (mechanical button pusher) over BLE.
+
+    A convenience to physically press a server's power button. Plain BLE, no
+    pairing. Manual only -- not wired into auto-shutdown.
+    """
+
+
+@switchbot.command("scan")
+@click.option("--timeout", default=10, show_default=True, help="Scan seconds.")
+@click.pass_context
+def switchbot_scan(ctx: click.Context, timeout: int) -> None:
+    """Scan for nearby SwitchBot devices (to find the Bot's MAC)."""
+    config = load_config(ctx.obj["config_path"])
+    configure_logging(config.logging.level, config.logging.format)
+    found = asyncio.run(switchbot_mod.scan(config.switchbot.adapter, timeout))
+    click.echo(json.dumps(found, indent=2))
+
+
+def _switchbot_send(config: Config, action: str) -> None:
+    try:
+        message = asyncio.run(switchbot_mod.SwitchBot(config.switchbot).send(action))
+    except switchbot_mod.SwitchBotError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(message)
+
+
+@switchbot.command("press")
+@click.pass_context
+def switchbot_press(ctx: click.Context) -> None:
+    """Press the button (momentary)."""
+    config = load_config(ctx.obj["config_path"])
+    configure_logging(config.logging.level, config.logging.format)
+    _switchbot_send(config, "press")
+
+
+@switchbot.command("on")
+@click.pass_context
+def switchbot_on(ctx: click.Context) -> None:
+    """Send 'on' (Bot in switch mode)."""
+    config = load_config(ctx.obj["config_path"])
+    configure_logging(config.logging.level, config.logging.format)
+    _switchbot_send(config, "on")
+
+
+@switchbot.command("off")
+@click.pass_context
+def switchbot_off(ctx: click.Context) -> None:
+    """Send 'off' (Bot in switch mode)."""
+    config = load_config(ctx.obj["config_path"])
+    configure_logging(config.logging.level, config.logging.format)
+    _switchbot_send(config, "off")
 
 
 @cli.command()
